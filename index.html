@@ -11,12 +11,15 @@
     canvas { width: 100% !important; height: 100% !important; object-fit: contain; image-rendering: pixelated; display: block; }
     
     #hud { position: absolute; top: 12px; left: 12px; font-size: 16px; text-shadow: 2px 2px #000; display: flex; gap: 16px; pointer-events: none; z-index: 2; }
-    #msg { position: absolute; inset: 0; background: rgba(0,0,0,0.7); display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; font-size: 24px; line-height: 1.6; z-index: 20; }
+    #msg { position: absolute; inset: 0; background: rgba(0,0,0,0.7); display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; font-size: 24px; line-height: 1.6; z-index: 8; pointer-events: none; }
+    body.menu #msg { display: none !important; }
     #toast { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); padding: 8px 16px; border-radius: 20px; font-size: 14px; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 20; }
     #toast.show { opacity: 1; }
-    #status { position: absolute; bottom: 12px; left: 12px; color: #ffeb3b; font-size: 14px; text-shadow: 1px 1px #000; z-index: 2; }
+    #status { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); color: #ffeb3b; font-size: 14px; text-shadow: 1px 1px #000; z-index: 30; pointer-events: none; text-align: center; }
     #help { position: absolute; bottom: 12px; right: 12px; font-size: 12px; text-align: right; opacity: 0.7; white-space: pre-line; text-shadow: 1px 1px #000; pointer-events: none; z-index: 2; }
     
+    #playmenu { position: absolute; top: 12px; right: 12px; z-index: 5; padding: 6px 12px; }
+    body.editing #playmenu, body.menu #playmenu { display: none; }
     body.menu #hud, body.menu #help { display: none; }
     body.editing #hud { display: none; }
     
@@ -28,7 +31,7 @@
     button:hover { background: #335; border-color: #88a; }
     button.on { background: #4a2; border-color: #8f5; }
     .btn { min-width: 180px; }
-    .row { display: flex; gap: 8px; align-items: center; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center; max-width: 92vw; }
     
     #edbar { position: absolute; top: 12px; left: 12px; display: none; flex-direction: column; gap: 8px; z-index: 5; }
     body.editing #edbar { display: flex; }
@@ -36,8 +39,8 @@
     .slot { display: flex; flex-direction: column; align-items: center; width: 48px; padding: 4px; font-size: 10px; }
     .slot .ic { font-size: 18px; margin: 2px 0; }
     #shapes { display: flex; gap: 4px; flex-wrap: wrap; max-width: 320px; }
-    #shapes button { width: 32px; height: 32px; padding: 0; font-size: 16px; }
-    #edinfo { position: absolute; top: 12px; right: 12px; display: none; text-align: right; font-size: 12px; text-shadow: 1px 1px #000; white-space: pre-line; z-index: 5; }
+    #shapes button { width: 32px; min-width: 0; height: 32px; padding: 0; font-size: 16px; } /* min-width от .btn раздувал кнопки форм до 180px, и часть кнопок уезжала за экран */
+    #edinfo { position: absolute; top: 12px; right: 12px; display: none; text-align: right; font-size: 12px; text-shadow: 1px 1px #000; white-space: pre-line; z-index: 5; pointer-events: none; }
     body.editing #edinfo { display: block; }
     #drawbox { display: none; background: rgba(0,0,0,0.6); padding: 8px; border-radius: 4px; font-size: 12px; max-width: 260px; }
     
@@ -61,6 +64,7 @@
     <div>🏆 <span id="hBest">--</span></div>
   </div>
 
+  <button id="playmenu" class="openmenu" title="Меню (Esc)">☰ Меню</button>
   <div id="msg"></div>
   <div id="toast"></div>
   <div id="status"></div>
