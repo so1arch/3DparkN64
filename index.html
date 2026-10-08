@@ -7,8 +7,8 @@
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
     body { width: 100vw; height: 100vh; overflow: hidden; background: #000; font-family: monospace; color: #fff; }
-    #game { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
-    canvas { width: 100% !important; height: 100% !important; object-fit: contain; image-rendering: pixelated; }
+    #game { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; position: absolute; inset: 0; }
+    canvas { width: 100% !important; height: 100% !important; object-fit: contain; image-rendering: pixelated; display: block; }
     
     #hud { position: absolute; top: 12px; left: 12px; font-size: 16px; text-shadow: 2px 2px #000; display: flex; gap: 16px; pointer-events: none; z-index: 2; }
     #msg { position: absolute; inset: 0; background: rgba(0,0,0,0.7); display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; font-size: 24px; line-height: 1.6; z-index: 20; }
@@ -46,7 +46,6 @@
     #worklist .item { display: flex; gap: 6px; }
     #worklist .item button { flex: 1; text-align: left; }
 
-    /* Панель свойств редактора */
     #props { display: none; position: absolute; bottom: 12px; left: 12px; background: rgba(10,15,30,0.9); padding: 10px; border-radius: 6px; flex-wrap: wrap; gap: 8px; max-width: 600px; z-index: 6; }
     body.editing:not(.noprops) #props { display: flex; }
   </style>
@@ -131,7 +130,7 @@
     <button class="back btn">Назад</button>
   </div>
 
-  <!-- Кастомизация персонажа -->
+  <!-- Персонаж -->
   <div id="scr-char" class="screen">
     <div class="title">Персонаж</div>
     <div id="charPreview"></div>
@@ -175,7 +174,7 @@
     <button class="back btn">Назад</button>
   </div>
 
-  <!-- Панель свойств в редакторе -->
+  <!-- Панель свойств -->
   <div id="props">
     <input id="ename" placeholder="Название уровня">
     <label><input type="checkbox" id="edreq"> Монеты обязательны</label>
