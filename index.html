@@ -10,12 +10,12 @@
     #game { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
     canvas { width: 100% !important; height: 100% !important; object-fit: contain; image-rendering: pixelated; }
     
-    #hud { position: absolute; top: 12px; left: 12px; font-size: 16px; text-shadow: 2px 2px #000; display: flex; gap: 16px; pointer-events: none; }
-    #msg { position: absolute; inset: 0; background: rgba(0,0,0,0.7); display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; font-size: 24px; line-height: 1.6; }
-    #toast { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); padding: 8px 16px; border-radius: 20px; font-size: 14px; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+    #hud { position: absolute; top: 12px; left: 12px; font-size: 16px; text-shadow: 2px 2px #000; display: flex; gap: 16px; pointer-events: none; z-index: 2; }
+    #msg { position: absolute; inset: 0; background: rgba(0,0,0,0.7); display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; font-size: 24px; line-height: 1.6; z-index: 20; }
+    #toast { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); padding: 8px 16px; border-radius: 20px; font-size: 14px; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 20; }
     #toast.show { opacity: 1; }
-    #status { position: absolute; bottom: 12px; left: 12px; color: #ffeb3b; font-size: 14px; text-shadow: 1px 1px #000; }
-    #help { position: absolute; bottom: 12px; right: 12px; font-size: 12px; text-align: right; opacity: 0.7; white-space: pre-line; text-shadow: 1px 1px #000; pointer-events: none; }
+    #status { position: absolute; bottom: 12px; left: 12px; color: #ffeb3b; font-size: 14px; text-shadow: 1px 1px #000; z-index: 2; }
+    #help { position: absolute; bottom: 12px; right: 12px; font-size: 12px; text-align: right; opacity: 0.7; white-space: pre-line; text-shadow: 1px 1px #000; pointer-events: none; z-index: 2; }
     
     body.menu #hud, body.menu #help { display: none; }
     body.editing #hud { display: none; }
@@ -37,7 +37,7 @@
     .slot .ic { font-size: 18px; margin: 2px 0; }
     #shapes { display: flex; gap: 4px; flex-wrap: wrap; max-width: 320px; }
     #shapes button { width: 32px; height: 32px; padding: 0; font-size: 16px; }
-    #edinfo { position: absolute; top: 12px; right: 12px; display: none; text-align: right; font-size: 12px; text-shadow: 1px 1px #000; white-space: pre-line; }
+    #edinfo { position: absolute; top: 12px; right: 12px; display: none; text-align: right; font-size: 12px; text-shadow: 1px 1px #000; white-space: pre-line; z-index: 5; }
     body.editing #edinfo { display: block; }
     #drawbox { display: none; background: rgba(0,0,0,0.6); padding: 8px; border-radius: 4px; font-size: 12px; max-width: 260px; }
     
@@ -45,12 +45,17 @@
     #worklist { max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; width: 320px; }
     #worklist .item { display: flex; gap: 6px; }
     #worklist .item button { flex: 1; text-align: left; }
+
+    /* Панель свойств редактора */
+    #props { display: none; position: absolute; bottom: 12px; left: 12px; background: rgba(10,15,30,0.9); padding: 10px; border-radius: 6px; flex-wrap: wrap; gap: 8px; max-width: 600px; z-index: 6; }
+    body.editing:not(.noprops) #props { display: flex; }
   </style>
 </head>
 <body>
   <div id="game"></div>
 
   <div id="hud">
+    <div id="lvname" style="font-weight:bold;color:#ffd700;"></div>
     <div id="hCoins">×0/0</div>
     <div id="hNeed" style="color:#ff5555"></div>
     <div>⏱ <span id="hTime">0.0</span>s</div>
@@ -88,7 +93,7 @@
 
   <div id="edinfo"></div>
 
-  <!-- Меню -->
+  <!-- Главное меню -->
   <div id="scr-main" class="screen">
     <div class="title">N64 Parkour</div>
     <button id="mPlay" class="btn">▶ Играть</button>
@@ -100,6 +105,7 @@
     <button id="mCtl" class="btn">⌨ Управление</button>
   </div>
 
+  <!-- Выбор уровней -->
   <div id="scr-levels" class="screen">
     <div class="title">Выбор уровня</div>
     <button id="btnClassic" class="btn">Классика</button>
@@ -117,6 +123,7 @@
     <button class="back btn">Назад</button>
   </div>
 
+  <!-- Мастерская -->
   <div id="scr-work" class="screen">
     <div class="title">Мастерская</div>
     <div id="worklist">Загрузка…</div>
@@ -124,6 +131,7 @@
     <button class="back btn">Назад</button>
   </div>
 
+  <!-- Кастомизация персонажа -->
   <div id="scr-char" class="screen">
     <div class="title">Персонаж</div>
     <div id="charPreview"></div>
@@ -143,6 +151,7 @@
     <button class="back btn">Назад</button>
   </div>
 
+  <!-- Настройки -->
   <div id="scr-settings" class="screen">
     <div class="title">Настройки</div>
     <div class="row">Графика: <select id="qualitySel"><option value="high">HIGH (PBR + SSAO)</option><option value="light">LIGHT (Быстро)</option></select></div>
@@ -153,6 +162,7 @@
     <button class="back btn">Назад</button>
   </div>
 
+  <!-- Управление -->
   <div id="scr-controls" class="screen">
     <div class="title">Управление</div>
     <div style="font-size:13px;line-height:1.8;text-align:left;">
@@ -165,8 +175,8 @@
     <button class="back btn">Назад</button>
   </div>
 
-  <!-- Модалка свойств в редакторе -->
-  <div id="props" style="display:none;">
+  <!-- Панель свойств в редакторе -->
+  <div id="props">
     <input id="ename" placeholder="Название уровня">
     <label><input type="checkbox" id="edreq"> Монеты обязательны</label>
     <select id="edtheme"></select>
