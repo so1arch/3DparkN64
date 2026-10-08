@@ -12,6 +12,7 @@ import { paintSky, SUN } from './sky.js';
 import { createClouds } from './clouds.js';
 import { generate, rngFrom, STYLES, DIFFS } from './gen.js';
 import { music } from './music.js';
+import { input } from './input.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -491,10 +492,24 @@ let goalToastAt=0,lastHud='';
 let menuOpen=false,menuScreen='main',introDone=false;
 const hud=$('hud'),msg=$('msg'),hCoins=$('hCoins'),hNeed=$('hNeed'),hTime=$('hTime'),hBest=$('hBest');
 const mouse=new THREE.Vector2();
+let pad=input.idle; // состояние геймпада за текущий кадр (см. input.js)
 
 // ── Подсказки управления (заметные, но ненавязчивые) ──────────
 const HELP_PLAY  = 'WASD — движение  •  Пробел — прыжок\nQ/E — камера  •  R — заново  •  Esc — меню';
 const HELP_EDIT  = 'ЛКМ — поставить  •  ПКМ — стереть\nКолесо — зум  •  R — поворот  •  Z/X — высота  •  F — вся карта';
+
+// Все подсказки, зависящие от устройства ввода, обновляются здесь (вызывается при смене устройства)
+function refreshHints(edit=mode==='edit'){
+  const gp=input.device==='pad';
+  document.body.classList.toggle('pad',gp);
+  $('help').textContent=gp?input.helpText(edit?'edit':'play'):(edit?HELP_EDIT:HELP_PLAY);
+  $('ctlList').innerHTML=input.controlsHTML();
+  $('ctlDevice').textContent='Сейчас: '+input.deviceName();
+  $('padhint').textContent=input.menuHint();
+  document.querySelectorAll('.openmenu').forEach((b)=>{b.textContent=input.menuButtonText();});
+  document.querySelectorAll('.hint-restart').forEach((el)=>{el.textContent=input.restartHint();});
+  if(gp&&menuOpen)input.menuFocusFirst();
+}
 
 let toastT;
 function toast(t,ms=2200){const el=$('toast');el.textContent=t;el.classList.add('show');clearTimeout(toastT);toastT=setTimeout(()=>el.classList.remove('show'),ms);}
@@ -541,17 +556,19 @@ function win(){
   if(testRun)extra='<br>Тест уровня: рекорд не сохраняется';
   else{const prev=save.best[levelId];if(prev==null||time<prev){save.best[levelId]=time;extra+='<br>Новый рекорд!';}else extra+=`<br>Рекорд: ${prev.toFixed(1)} с`;persist();}
   msg.style.display='flex';
-  msg.innerHTML=`ЗВЕЗДА!<br>Время: ${time.toFixed(1)} с${total?`, монет: ${got}/${total}`:''}${extra}<br>R: сыграть ещё · Esc: меню`;
+  msg.innerHTML=`ЗВЕЗДА!<br>Время: ${time.toFixed(1)} с${total?`, монет: ${got}/${total}`:''}${extra}<br><span class="hint-restart">${input.restartHint()}</span>`;
 }
 
 function update(dt){
-  camA+=((keys.ArrowLeft||keys.KeyQ?1:0)-(keys.ArrowRight||keys.KeyE?1:0))*2*dt;
-  const f=(keys.KeyW?1:0)-(keys.KeyS?1:0),r=(keys.KeyD?1:0)-(keys.KeyA?1:0);
+  if(pad.restart)reset();
+  // Клавиатура и геймпад работают одновременно: оси геймпада просто добавляются к клавишам
+  camA+=((keys.ArrowLeft||keys.KeyQ?1:0)-(keys.ArrowRight||keys.KeyE?1:0)+pad.camDir-pad.lookX*1.4)*2*dt;
+  const f=(keys.KeyW?1:0)-(keys.KeyS?1:0)+pad.moveY,r=(keys.KeyD?1:0)-(keys.KeyA?1:0)+pad.moveX;
   let dx=-Math.sin(camA)*f+Math.cos(camA)*r,dz=-Math.cos(camA)*f-Math.sin(camA)*r;
-  const len=Math.hypot(dx,dz);
+  const len=Math.hypot(dx,dz),mag=Math.min(1,len); // стик наклонён слабее — идём медленнее
   if(len>0){dx/=len;dz/=len;face=Math.atan2(dx,dz);}
-  v.x=dx*SPEED;v.z=dz*SPEED;
-  coyote=st.onGround?0.1:coyote-dt; jumpBuf-=dt;
+  v.x=dx*SPEED*mag;v.z=dz*SPEED*mag;
+  coyote=st.onGround?0.1:coyote-dt; jumpBuf-=dt; if(pad.jump)jumpBuf=0.15;
   if(jumpBuf>0&&coyote>0){v.y=JUMP;coyote=0;jumpBuf=0;st.onGround=false;dustRing(p.x,p.y,p.z,7,1.8,0.28);}
   const n=Math.max(1,Math.ceil(dt/0.01)),h=dt/n; let landVy=0;
   for(let i=0;i<n;i++){v.y=Math.max(-35,v.y-GRAV*h);stepBody(parts,p,v,h,st);if(st.landed)landVy=Math.min(landVy,st.landVy);}
@@ -621,7 +638,7 @@ const fmt=(x)=>String(Math.round(x*100)/100);
 let lastInfo='';
 const GHOST_BOX={coin:[0.8,0.8,0.8,1.3],goal:[1.4,1.4,1.4,1.6],start:[0.8,1.2,0.8,0.6],cp:[0.6,2.4,0.6,1.2]};
 function updateGuides(){const t=ed.tool,plat=t==='plat';const have=ed.over&&computePlacement();ghostShape.visible=have&&plat;ghostBox.visible=have&&!!GHOST_BOX[t];dropLine.visible=footprint.visible=dot.visible=false;const gx=have?ed.mx:ed.tx,gz=have?ed.mz:ed.tz,gy=have?ed.my:ed.h;grid1.position.set(Math.round(gx),gy+0.03,Math.round(gz));grid2.position.set(Math.round(gx/5)*5,gy+0.03,Math.round(gz/5)*5);let txt='';if(have){if(t==='erase'){ray.setFromCamera(mouse,camera);const hit=ray.intersectObjects(levelGroup.children,false)[0];setHover(hit&&(hit.object.userData.k==='p'||hit.object.userData.k==='c'||hit.object.userData.k==='f')?hit.object:null);}else{setHover(null);let startY=ed.my;if(plat){if(ed.dirty)rebuildGhost();ghostShape.position.set(ed.mx,ed.my,ed.mz);ghostShape.rotation.y=ed.rot*DEG;}else if(GHOST_BOX[t]){const S=GHOST_BOX[t];ghostBox.scale.set(S[0],S[1],S[2]);ghostBox.position.set(ed.mx,ed.my+S[3],ed.mz);startY=ed.my+S[3];}const bottom=ed.below!=null?ed.below:startY-30;const a=dropGeo.attributes.position;a.setXYZ(0,ed.mx,startY,ed.mz);a.setXYZ(1,ed.mx,bottom,ed.mz);a.needsUpdate=true;dropLine.visible=startY-bottom>0.05;if(ed.below!=null&&ed.my-ed.below>0.05){const f2=plat?footprint:dot;f2.visible=true;f2.position.set(ed.mx,ed.below+0.04,ed.mz);if(plat){f2.rotation.y=ed.rot*DEG;f2.scale.set(1,0.02,1);}}}txt=`X ${fmt(ed.mx)}   Z ${fmt(ed.mz)}   ВЫСОТА ${fmt(ed.my)}`+(ed.below!=null?`   (над платформой +${fmt(ed.my-ed.below)})`:'   (под ним пусто)')+'\n';}else setHover(null);if(t==='draw')refreshDraw(have?[ed.mx,ed.mz]:null);else drawLine.visible=drawPts.visible=false;txt+=`Плоскость: ${fmt(ed.h)}${ed.snap?' (прилипание)':''}   Платформ: ${L.plats.length}/80   Монет: ${L.coins.length}/100`;if(txt!==lastInfo){$('edinfo').textContent=txt;lastInfo=txt;}}
-function updateEdit(dt){ed.yaw+=((keys.KeyQ?1:0)-(keys.KeyE?1:0))*1.8*dt;const f=(keys.KeyW?1:0)-(keys.KeyS?1:0),r=(keys.KeyD?1:0)-(keys.KeyA?1:0),sp=ed.dist*0.8*dt;ed.tx+=(-Math.sin(ed.yaw)*f+Math.cos(ed.yaw)*r)*sp;ed.tz+=(-Math.cos(ed.yaw)*f-Math.sin(ed.yaw)*r)*sp;ed.ty+=(ed.h-ed.ty)*(1-Math.exp(-8*dt));const cp=Math.cos(ed.pitch);camera.position.set(ed.tx+Math.sin(ed.yaw)*cp*ed.dist,ed.ty+Math.sin(ed.pitch)*ed.dist,ed.tz+Math.cos(ed.yaw)*cp*ed.dist);camera.lookAt(ed.tx,ed.ty,ed.tz);camera.updateMatrixWorld();updateGuides();coins.forEach((c)=>(c.rotation.y+=dt*4));goal.rotation.y+=dt*2;}
+function updateEdit(dt){if(input.device==='pad')padEdit();ed.yaw+=((keys.KeyQ?1:0)-(keys.KeyE?1:0)-pad.lookX*1.2)*1.8*dt;ed.pitch=Math.max(0.08,Math.min(1.5,ed.pitch-pad.lookY*1.1*dt));ed.dist=Math.max(4,Math.min(180,ed.dist*Math.exp(-pad.zoom*1.4*dt)));const f=(keys.KeyW?1:0)-(keys.KeyS?1:0)+pad.moveY,r=(keys.KeyD?1:0)-(keys.KeyA?1:0)+pad.moveX,sp=ed.dist*0.8*dt;ed.tx+=(-Math.sin(ed.yaw)*f+Math.cos(ed.yaw)*r)*sp;ed.tz+=(-Math.cos(ed.yaw)*f-Math.sin(ed.yaw)*r)*sp;ed.ty+=(ed.h-ed.ty)*(1-Math.exp(-8*dt));const cp=Math.cos(ed.pitch);camera.position.set(ed.tx+Math.sin(ed.yaw)*cp*ed.dist,ed.ty+Math.sin(ed.pitch)*ed.dist,ed.tz+Math.cos(ed.yaw)*cp*ed.dist);camera.lookAt(ed.tx,ed.ty,ed.tz);camera.updateMatrixWorld();updateGuides();coins.forEach((c)=>(c.rotation.y+=dt*4));goal.rotation.y+=dt*2;}
 function fitView(){const B=partsBounds(parts);let x0=B.minX,x1=B.maxX,z0=B.minZ,z1=B.maxZ;for(const[x,,z]of[...L.coins,...(L.cps||[]),L.goal,L.start]){x0=Math.min(x0,x);x1=Math.max(x1,x);z0=Math.min(z0,z);z1=Math.max(z1,z);}ed.tx=(x0+x1)/2;ed.tz=(z0+z1)/2;ed.dist=Math.min(180,Math.max(10,Math.hypot(x1-x0,z1-z0)*0.9+6));ed.pitch=0.9;}
 function edited(){L.seed=null;L.id=null;L.style=null;buildLevel(L);if(mode==='edit')setGoalOpen(true);$('lvname').textContent=L.name;}
 function erase(){ray.setFromCamera(mouse,camera);const hit=ray.intersectObjects(levelGroup.children,false)[0];const u=hit&&hit.object.userData;if(!u)return;if(u.k==='p'&&L.plats.length>1){pushHist();L.plats.splice(u.i,1);}else if(u.k==='c'){pushHist();L.coins.splice(u.i,1);}else if(u.k==='f'){pushHist();L.cps.splice(u.i,1);}else return;edited();}
@@ -673,6 +690,7 @@ function showMenu(screen){
   if(screen==='char')initCharPreview();
   // Музыка стартует при закрытии меню
   if(!screen)startMusic();
+  if(screen&&input.device==='pad')input.menuFocusFirst();else input.clearFocus();
 }
 const toggleMenu=()=>showMenu(menuOpen?null:'main');
 
@@ -685,7 +703,7 @@ function setTab(t){
   if(!e){setHover(null);ed.over=false;cancelDraw();}
   dragonRoot.visible=dust.visible=!e;
   document.body.classList.toggle('editing',e);
-  $('help').textContent=e?HELP_EDIT:HELP_PLAY;
+  refreshHints(e);
   cv.style.cursor=e?'crosshair':'';
   if(e!==(mode==='edit')){
     mode=e?'edit':'play';
@@ -767,6 +785,33 @@ $('skinSel').add(new Option('Свои цвета','custom'));
 function loadHash(){const h=location.hash.slice(1);if(h.startsWith('S=')){const q=new URLSearchParams(h);play(generate(q.get('S'),q.get('T')||'mix',+q.get('D')||2,THEMES.length));}else if(h.startsWith('L=')){const lv=dec(h.slice(2));if(lv)play(lv);else say('Ссылка на уровень повреждена');}}
 addEventListener('hashchange',loadHash);
 
+// ── Геймпад: меню, редактор, служебные кнопки ─────────────────
+function padActions(){
+  if(pad.any){userGesture=true;startMusic();music.resume();} // кнопка геймпада тоже считается «первым действием»
+  if(menuOpen){
+    if(pad.start)showMenu(null);
+    else if(pad.cancel)showMenu(menuScreen==='main'?null:'main');
+    return;
+  }
+  if(pad.start)return toggleMenu();
+  if(mode==='play'){if(pad.back&&testRun)setTab('edit');}
+}
+// Редактор с геймпада: в центре экрана прицел, он заменяет курсор мыши
+function padEdit(){
+  mouse.set(0,0);ed.over=true;
+  const tools=TOOLS.map((t)=>t[0]),n=tools.length;
+  if(pad.nav==='left'||pad.nav==='right')setTool(tools[(tools.indexOf(ed.tool)+(pad.nav==='right'?1:-1)+n)%n]);
+  else if(pad.nav==='up'){ed.h+=0.5;syncUI();}
+  else if(pad.nav==='down'){ed.h-=0.5;syncUI();}
+  if(pad.lb||pad.rb){const c=shapeCount();setShape((ed.shape+(pad.rb?1:-1)+c)%c);}
+  if(pad.a)place();
+  if(pad.x){if(ed.tool==='draw'&&ed.draw.length)undoDrawPoint();else erase();} // как ПКМ
+  if(pad.b)undo();
+  if(pad.y){if(ed.tool==='draw'&&ed.draw.length>=3)finishDraw();else{ed.rot=(ed.rot+15)%360;ed.dirty=true;syncUI();}}
+  if(pad.r3)fitView();
+  if(pad.back)$('btnTest').click();
+}
+
 // ── Главный цикл ──────────────────────────────────────────────
 const clock=new THREE.Clock();
 let frameAcc=0;
@@ -775,6 +820,8 @@ function loop(){
   frameAcc+=clock.getDelta();
   if(FPS_CAP&&frameAcc<(1/FPS_CAP)*0.9)return;
   const dt=Math.min(frameAcc,0.05); frameAcc=0; clockT+=dt;
+  pad=input.poll(dt,{menuOpen});
+  padActions();
   if(!menuOpen){if(mode==='play')update(dt);else updateEdit(dt);}
   if(menuOpen&&menuScreen==='char')renderPreview(dt);
   updateDragons(dt,clockT);
@@ -783,8 +830,11 @@ function loop(){
 }
 
 setTool('plat'); syncUI();
+input.onChange(()=>refreshHints());
+input.onPadEvent((name,on)=>toast(on?`${name} подключён`:`${name} отключён`));
 play(classic());
 loadHash();
 update(1e-4);
 showMenu('main');
+refreshHints();
 loop();
