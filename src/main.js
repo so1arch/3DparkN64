@@ -657,15 +657,16 @@ const TOOL_ICONS={plat:'▬',coin:'●',goal:'★',start:'⌂',erase:'✖',cp:'�
 TOOLS.forEach(([id,name],i)=>{const b=document.createElement('button');b.className='slot';b.dataset.tool=id;b.title=`${name} (${i+1})`;b.innerHTML=`<span class="n">${i+1}</span><span class="ic">${TOOL_ICONS[id]}</span><span class="nm">${name}</span>`;b.onclick=()=>setTool(id);$('tools').append(b);});
 
 // ── Музыка: старт при первом взаимодействии ───────────────────
-let musicStarted=false;
-function startMusic(){if(musicStarted)return;musicStarted=true;music.volume=musicVol;music.play(musicPreset);}
-document.addEventListener('click',startMusic,{once:true});
-document.addEventListener('keydown',startMusic,{once:true});
+let musicStarted=false,userGesture=false;
+function startMusic(){if(!userGesture||musicStarted)return;musicStarted=true;music.volume=musicVol;music.play(musicPreset);}
+const onGesture=()=>{userGesture=true;startMusic();};
+document.addEventListener('click',onGesture,{once:true});
+document.addEventListener('keydown',onGesture,{once:true});
 
 function showMenu(screen){
   menuOpen=!!screen; menuScreen=screen||'main';
   document.body.classList.toggle('menu',menuOpen);
-  if(screen)document.querySelectorAll('.screen').forEach((el)=>el.classList.toggle('on',el.id==='scr-'+screen));
+  document.querySelectorAll('.screen').forEach((el)=>el.classList.toggle('on',!!screen&&el.id==='scr-'+screen));
   if(menuOpen){for(const k in keys)keys[k]=false;jumpBuf=0;}
   if(screen==='main')$('mPlay').textContent=introDone?'▶ Продолжить':'▶ Играть';
   if(screen==='work')loadWork();
