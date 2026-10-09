@@ -17,10 +17,36 @@ export const MUSIC_NAMES = [
   'Звёздное небо',
   'Пиксельный бег',
   'Случайный плейлист',
+  'Авто (по времени и погоде)',
 ];
-const SHUFFLE = 10;
+const SHUFFLE = 10, AUTO = 11;
 const FN = [null, '_relaxing', '_impulsive', '_melodic', '_musicbox', '_adventure', '_lofi', '_waltz', '_stars', '_pixel'];
+export const MUSIC_FN = FN; // для tools/measure-music.html
+// «Авто» подбирает трек под обстановку: [день ясно, день дождь, ночь ясно, ночь дождь]
+const AUTO_MAP = [5, 6, 8, 4];
 const rnd = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+// Время плавных переходов, секунды
+const XFADE = 3.2;      // между треками внутри плейлиста / «Авто»: новая мелодия начинается за XFADE секунд до конца старой
+const XFADE_PICK = 2.2; // когда трек выбран вручную в настройках
+const FADE_IN = 1.4;    // самый первый запуск
+
+// Выравнивание громкости. Треки написаны по-разному (у «Импульсивной» бочка и пила, у «Звёздного неба» тихие синусы),
+// поэтому без поправки при переходах слышны скачки. Коэффициенты получены измерением: каждый трек прогнан через
+// всю цепочку звука (шина музыки, ограничитель, фильтр «старой консоли») и приведён к одному уровню RMS.
+// Индекс = номер трека в FN. Пересчёт: tools/measure-music.html (см. README).
+const TRIM = [1, 0.86, 1.00, 0.80, 2.40, 0.98, 1.16, 1.44, 0.97, 1.00];
+
+// Эквивалент cos/sin-кривых для «равной мощности»: сумма громкостей двух перекрывающихся треков не проваливается посередине.
+const CURVE_N = 48;
+function fadeCurve(from, to) {
+  const c = new Float32Array(CURVE_N), up = to > from;
+  for (let i = 0; i < CURVE_N; i++) {
+    const u = i / (CURVE_N - 1), w = up ? Math.sin(u * Math.PI / 2) : 1 - Math.cos(u * Math.PI / 2);
+    c[i] = from + (to - from) * w;
+  }
+  return c;
+}
 
 export class MusicSystem {
   constructor() {
@@ -29,10 +55,13 @@ export class MusicSystem {
     this._timer = null;
     this._active = false;
     this._t = 0;          // время, до которого музыка уже расписана
-    this._sess = null;    // «сессия»: у каждого запуска своя громкость, чтобы старые ноты не звучали в новой мелодии
+    this._sess = null;    // «сессия»: у каждого трека своя пара усилителей (звук и отправка в реверберацию), чтобы старые ноты затухали отдельно от новых
     this._sessRev = null;
+    this._playing = null; // номер трека (индекс FN), который сейчас расписывается
+    this._fadeIn = FADE_IN;
     this._cur = 1;
     this._shuf = 0;
+    this._auto = AUTO_MAP[0];
   }
 
   // ─── Обёртки над движком: всё играет в текущую сессию ──────────────
@@ -43,42 +72,74 @@ export class MusicSystem {
   _snare(t, vol = 0.26) { audio.snare(t, vol, { dest: this._sess }); }
   _hat(t, vol = 0.1, dur = 0.04) { audio.hat(t, vol, dur, { dest: this._sess }); }
 
+  // ─── Плавная смена громкости по кривой «равной мощности» ───────────
+  _fade(param, t0, dur, to) {
+    const from = param.value;
+    try {
+      if (param.cancelAndHoldAtTime) param.cancelAndHoldAtTime(t0); else param.cancelScheduledValues(t0);
+      param.setValueCurveAtTime(fadeCurve(from, to), t0, dur);
+    } catch { // кривая не легла поверх прежней автоматизации (бывает при очень быстрой смене): ставим обычную линейную
+      param.cancelScheduledValues(0); param.setValueAtTime(from, t0); param.linearRampToValueAtTime(to, t0 + dur);
+    }
+  }
+
+  // Открыть сессию для трека idx: тишина -> нужная громкость за dur секунд, начиная с t0
+  _begin(idx, t0, dur) {
+    const ctx = audio.ctx, trim = TRIM[idx] ?? 1;
+    const g = ctx.createGain(), r = ctx.createGain();
+    g.gain.value = 0; r.gain.value = 0;
+    g.connect(audio.buses.music); r.connect(audio.revMusic);
+    this._fade(g.gain, t0, dur, trim); this._fade(r.gain, t0, dur, trim);
+    this._sess = g; this._sessRev = r;
+  }
+
+  // Старая сессия уходит в тишину за dur секунд (ноты, уже расписанные в ней, дозвучат тихо, а потом узел отключается)
+  _retire(g, r, t0, dur) {
+    if (!g || !audio.ctx) return;
+    this._fade(g.gain, t0, dur, 0); this._fade(r.gain, t0, dur, 0);
+    const ms = Math.max(0, t0 + dur - audio.ctx.currentTime) * 1000 + 3500;
+    setTimeout(() => { try { g.disconnect(); r.disconnect(); } catch { /* уже отключено */ } }, ms);
+  }
+
   // ─── УПРАВЛЕНИЕ ──────────────────────────────────────────────────
   resume() { audio.resume(); }
 
   play(preset) {
     if (!audio.unlock()) return;
-    this.stop();
+    const ctx = audio.ctx, now = ctx.currentTime, had = this._active && this._sess;
+    // прежний трек уходит плавно и одновременно с тем, как нарастает новый (а не «стоп, потом старт»)
+    clearTimeout(this._timer); this._timer = null;
+    if (had) this._retire(this._sess, this._sessRev, now + 0.02, XFADE_PICK);
+    this._sess = this._sessRev = null; this._active = false;
     this.preset = preset;
     if (!preset) return;
-    const ctx = audio.ctx, now = ctx.currentTime;
-    this._sess = ctx.createGain();
-    this._sess.gain.setValueAtTime(0, now);
-    this._sess.gain.linearRampToValueAtTime(1, now + 1.4);
-    this._sess.connect(audio.buses.music);
-    this._sessRev = ctx.createGain();
-    this._sessRev.connect(audio.revMusic);
+    this._fadeIn = had ? XFADE_PICK : FADE_IN;
     this._active = true;
-    this._tick = 0; this._shuf = 0; this._cur = 1;
+    this._tick = 0; this._shuf = 0; this._cur = 1; this._playing = null;
     this._t = now + 0.1;
     this._pump();
   }
 
-  stop() {
+  stop(fade = 0.8) {
     this._active = false;
-    clearTimeout(this._timer);
-    this._timer = null;
-    const s = this._sess, r = this._sessRev;
-    if (s && audio.ctx) {
-      const t = audio.ctx.currentTime;
-      s.gain.cancelScheduledValues(t); s.gain.setValueAtTime(s.gain.value, t); s.gain.linearRampToValueAtTime(0, t + 0.6);
-      r.gain.cancelScheduledValues(t); r.gain.setValueAtTime(0, t);
-      setTimeout(() => { try { s.disconnect(); r.disconnect(); } catch { /* уже отключено */ } }, 1500);
-    }
-    this._sess = this._sessRev = null;
+    clearTimeout(this._timer); this._timer = null;
+    if (this._sess && audio.ctx) this._retire(this._sess, this._sessRev, audio.ctx.currentTime, fade);
+    this._sess = this._sessRev = null; this._playing = null;
+  }
+
+  // Игра сообщает, что сейчас ночь/дождь. В режиме «Авто» трек меняется сразу, с перекрёстным затуханием.
+  setEnv(night, rain) {
+    this._auto = AUTO_MAP[(night ? 2 : 0) + (rain ? 1 : 0)];
+    if (this.preset !== AUTO || !this._active || !audio.ctx || this._playing == null || this._playing === this._auto) return;
+    const t0 = audio.ctx.currentTime + 0.05;
+    this._retire(this._sess, this._sessRev, t0, XFADE_PICK);
+    this._begin(this._auto, t0, XFADE_PICK);
+    this._playing = this._auto; this._tick = 0;
+    this._t = t0; // новая мелодия стартует прямо сейчас; всё, что старый трек уже расписал вперёд, глушит его усилитель
   }
 
   _pickPreset() {
+    if (this.preset === AUTO) return this._auto;
     if (this.preset !== SHUFFLE) return this.preset;
     if (this._shuf <= 0) {
       let n;
@@ -92,9 +153,21 @@ export class MusicSystem {
   // Расписываем музыку на несколько секунд вперёд: ритм не плывёт, даже если вкладка тормозит
   _pump() {
     if (!this._active || !audio.ctx) return;
-    while (this._t - audio.ctx.currentTime < 2.5) {
-      const fn = FN[this._pickPreset()];
-      this._t += this[fn](this._t);
+    const ctx = audio.ctx;
+    while (this._t - ctx.currentTime < 4) {
+      const idx = this._pickPreset();
+      if (idx !== this._playing) {
+        if (!this._sess) this._begin(idx, this._t, this._fadeIn); // самый первый трек
+        else {
+          // смена трека на стыке: новая мелодия начинается чуть раньше конца старой, они перекрываются
+          const t0 = Math.max(ctx.currentTime + 0.05, this._t - XFADE), dur = Math.max(0.4, this._t - t0);
+          this._retire(this._sess, this._sessRev, t0, dur);
+          this._begin(idx, t0, dur);
+          this._t = t0; this._tick = 0;
+        }
+        this._playing = idx;
+      }
+      this._t += this[FN[idx]](this._t);
       this._tick++;
     }
     this._timer = setTimeout(() => this._pump(), 400);
