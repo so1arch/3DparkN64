@@ -8,8 +8,9 @@ import {
   SHAPES, DEG, MOVE, normPlat, localParts, worldParts, partsBounds, supportY, stepBody,
   shapeCount, shapeDef, setCustomShapes, isSimplePolygon, chainOk, normalizeShape,
 } from './shapes.js';
-import { paintSky, SUN } from './sky.js';
+import { paintSky, SUN, MOON, skyKey } from './sky.js';
 import { createClouds } from './clouds.js';
+import { createRain } from './weather.js';
 import { generate, rngFrom, STYLES, DIFFS } from './gen.js';
 import { music, MUSIC_NAMES } from './music.js';
 import { audio } from './audio.js';
@@ -18,11 +19,13 @@ import { input } from './input.js';
 const $ = (id) => document.getElementById(id);
 
 // ── Настройки графики: HIGH + безлимитный FPS по умолчанию ─────
-let QUALITY = 'high', FPS_CAP = 0;
+let QUALITY = 'high', FPS_CAP = 0, TIME = 'day', WEATHER = 'clear';
 try {
   const q = JSON.parse(localStorage.getItem('n64parkour.v1') || '{}');
   if (q.quality === 'light') QUALITY = 'light';
   if ([0, 30, 60].includes(q.fps)) FPS_CAP = q.fps;
+  if (q.time === 'night') TIME = 'night';
+  if (q.weather === 'rain') WEATHER = 'rain';
 } catch { /* defaults */ }
 const HIGH = QUALITY === 'high';
 
@@ -32,11 +35,22 @@ const renderer = new THREE.WebGLRenderer({ antialias: false });
 renderer.setPixelRatio(1);
 $('game').appendChild(renderer.domElement);
 
-function makeSky() {
+// Небо и карта окружения рисуются в коде (~0.2 с на вариант), поэтому каждый из четырёх вариантов
+// (день/ночь × ясно/дождь) строится один раз, при первом показе, и дальше берётся из кэша.
+const skyCache = {}, envCache = {};
+function skyTex(night, rain) {
+  const k = skyKey(night, rain);
+  return skyCache[k] || (skyCache[k] = makeSky(night, rain));
+}
+function envFor(night, rain) {
+  const k = skyKey(night, rain);
+  return envCache[k] || (envCache[k] = makeEnv(night, rain));
+}
+function makeSky(night, rain) {
   const W = HIGH ? 1024 : 512, H = W / 2, c = document.createElement('canvas');
   c.width = W; c.height = H;
   const g = c.getContext('2d'), img = g.createImageData(W, H);
-  paintSky(img.data, W, H);
+  paintSky(img.data, W, H, { night, rain });
   g.putImageData(img, 0, 0);
   const t = new THREE.CanvasTexture(c);
   t.mapping = THREE.EquirectangularReflectionMapping;
@@ -47,12 +61,13 @@ function makeSky() {
 }
 
 const scene = new THREE.Scene();
-scene.background = makeSky();
+scene.background = skyTex(TIME === 'night', WEATHER === 'rain');
 scene.fog = new THREE.Fog(0xb0d8ff, 24, 150);
 const camera = new THREE.PerspectiveCamera(60, 4 / 3, 0.1, 250);
 camera.rotation.order = 'YXZ';
 scene.add(camera);
-scene.add(new THREE.AmbientLight(0xffffff, 0.3));
+const ambient = new THREE.AmbientLight(0xffffff, 0.3);
+scene.add(ambient);
 const sun = new THREE.DirectionalLight(0xffffff, 1.3);
 sun.position.set(5, 10, 6);
 scene.add(sun);
@@ -80,7 +95,7 @@ marker.visible = false; scene.add(marker);
 if (ssao) {
   const ssaoRender = ssao.render.bind(ssao);
   ssao.render = (...args) => {
-    const hide = [helpers, marker, dust, ...outlines], was = hide.map((o) => o.visible);
+    const hide = [helpers, marker, dust, ...rain.objects, ...outlines], was = hide.map((o) => o.visible);
     hide.forEach((o) => (o.visible = false)); ssaoRender(...args); hide.forEach((o, i) => (o.visible = was[i]));
   };
 }
@@ -99,6 +114,7 @@ const box = (parent, w, h, d, m, x, y, z) => {
   o.position.set(x, y, z); parent.add(o); return o;
 };
 const clouds = createClouds(scene, HIGH ? { count: 36, puffs: 7 } : { count: 20, puffs: 5 });
+const rain = createRain(scene, { high: HIGH });
 
 // ── Материалы платформ ─────────────────────────────────────────
 const TILE_M = 2;
@@ -128,13 +144,16 @@ const albedoTex = mapTex(TS, (x, y) => { const c = Math.max(0, Math.min(255, (se
 const ormTex = !HIGH ? null : mapTex(TS, (x,y) => { if (seam(x,y)) return [255,255,0]; if (flake[y*TS+x]) return [255,60,255]; return cellOf(x,y)?[255,215,70]:[255,185,120]; }, false);
 const bumpTex = !HIGH ? null : mapTex(TS, (x,y) => { const h=seam(x,y)?40:bevel(x,y)?230:150+noiseT(x,y); return [h,h,h]; }, false);
 
-function makeEnv() {
-  const W=512,H=256,px=new Uint8ClampedArray(W*H*4); paintSky(px,W,H);
+// Яркость «солнца» (или луны) в карте отражений: [широкий блик, узкий блик]. Под тучами бликов почти нет.
+const ENV_BOOST = { day: [2, 18], night: [1.4, 10], rain: [0.35, 0], nightRain: [0.12, 0] };
+function makeEnv(night, rain) {
+  const W=512,H=256,px=new Uint8ClampedArray(W*H*4); paintSky(px,W,H,{night,rain});
+  const [b1,b2]=ENV_BOOST[skyKey(night,rain)], LD=night?MOON:SUN;
   const half=new Uint16Array(W*H*4),toH=THREE.DataUtils.toHalfFloat;
   for (let j=0;j<H;j++) { const lat=(0.5-(j+0.5)/H)*Math.PI,y=Math.sin(lat),c=Math.cos(lat),row=H-1-j;
     for (let i=0;i<W;i++) { const phi=((i+0.5)/W-0.5)*Math.PI*2;
-      const sd=c*Math.cos(phi)*SUN[0]+y*SUN[1]+c*Math.sin(phi)*SUN[2];
-      const boost=sd>0?1+2*Math.pow(sd,30)+18*Math.pow(sd,1500):1;
+      const sd=c*Math.cos(phi)*LD[0]+y*LD[1]+c*Math.sin(phi)*LD[2];
+      const boost=sd>0?1+b1*Math.pow(sd,30)+b2*Math.pow(sd,1500):1;
       const o=(j*W+i)*4,d=(row*W+i)*4;
       for (let k=0;k<3;k++) half[d+k]=toH(Math.pow(px[o+k]/255,2.2)*boost); half[d+3]=toH(1); } }
   const t=new THREE.DataTexture(half,W,H,THREE.RGBAFormat,THREE.HalfFloatType);
@@ -142,7 +161,7 @@ function makeEnv() {
   t.minFilter=t.magFilter=THREE.LinearFilter; t.generateMipmaps=false; t.needsUpdate=true;
   const pm=new THREE.PMREMGenerator(renderer),rt=pm.fromEquirectangular(t); t.dispose(); pm.dispose(); return rt.texture;
 }
-const envTex = HIGH ? makeEnv() : null;
+let envTex = HIGH ? envFor(TIME === 'night', WEATHER === 'rain') : null;
 
 const THEMES = [
   { name:'Классика', colors:[0x4caf50,0xff9800,0x42a5f5,0xe91e63,0xffeb3b], rough:0.5, metal:0.45, env:1.0 },
@@ -154,11 +173,23 @@ const THEMES = [
 ];
 const grey = (k) => new THREE.Color().setScalar(Math.max(0, Math.min(1, k)));
 function platMat(color, th) {
-  if (HIGH) return new THREE.MeshStandardMaterial({ color, map:albedoTex, roughnessMap:ormTex, metalnessMap:ormTex, bumpMap:bumpTex, bumpScale:0.6, roughness:th.rough, metalness:th.metal, vertexColors:true, envMap:envTex, envMapIntensity:th.env });
-  return new THREE.MeshPhongMaterial({ color, map:albedoTex, vertexColors:true, shininess:8+(1-th.rough)*80, specular:grey(0.1+0.3*th.metal+0.3*(1-th.rough)**2) });
+  const m = HIGH
+    ? new THREE.MeshStandardMaterial({ color, map:albedoTex, roughnessMap:ormTex, metalnessMap:ormTex, bumpMap:bumpTex, bumpScale:0.6, roughness:th.rough, metalness:th.metal, vertexColors:true, envMap:envTex, envMapIntensity:th.env })
+    : new THREE.MeshPhongMaterial({ color, map:albedoTex, vertexColors:true, shininess:8+(1-th.rough)*80, specular:grey(0.1+0.3*th.metal+0.3*(1-th.rough)**2) });
+  m.userData.base = new THREE.Color(color); m.userData.th = th; // исходные значения: от них считается «мокрый» вид
+  return m;
 }
+// Мокрая платформа: темнее, гладче и сильнее отражает небо и свет. wet: 0 — сухо, 1 — насквозь мокро
+const WET_SPEC = new THREE.Color();
+function applyWet(m, wet = env.wet) {
+  const { base, th } = m.userData;
+  m.color.copy(base).multiplyScalar(1 - 0.32 * wet);
+  if (HIGH) { m.roughness = th.rough * (1 - 0.72 * wet); m.envMapIntensity = th.env * (1 + 1.2 * wet); }
+  else { m.shininess = 8 + (1 - th.rough) * 80 + 90 * wet; m.specular.copy(grey(0.1 + 0.3 * th.metal + 0.3 * (1 - th.rough) ** 2)).lerp(WET_SPEC.setScalar(0.75), 0.6 * wet); }
+}
+const glossMats = []; // материалы с отражением неба: у них надо менять карту окружения при смене дня/ночи/погоды
 function gloss(color, rough, metal, extra={}) {
-  if (HIGH) return new THREE.MeshStandardMaterial({ color, roughness:rough, metalness:metal, envMap:envTex, envMapIntensity:1.2, ...extra });
+  if (HIGH) { const m = new THREE.MeshStandardMaterial({ color, roughness:rough, metalness:metal, envMap:envTex, envMapIntensity:1.2, ...extra }); glossMats.push(m); return m; }
   return new THREE.MeshPhongMaterial({ color, shininess:8+(1-rough)*90, specular:grey(0.12+0.35*metal+0.3*(1-rough)**2), ...extra });
 }
 function setShine(m, rough, metal) {
@@ -168,17 +199,22 @@ function setShine(m, rough, metal) {
 
 // ── Сохранение ─────────────────────────────────────────────────
 const SAVE_KEY = 'n64parkour.v1';
-let save = { best:{}, skin:null, quality:QUALITY, fps:FPS_CAP, musicPreset:1, audio:null };
+const AUDIO_VER = 2; // 2: громкость эффектов по умолчанию снижена с 80 % до 50 %
+let save = { best:{}, skin:null, quality:QUALITY, fps:FPS_CAP, musicPreset:1, audio:null, audioVer:AUDIO_VER, time:TIME, weather:WEATHER };
 let musicPreset = 1;
 try {
   const s = JSON.parse(localStorage.getItem(SAVE_KEY) || '{}');
   if (s.best && typeof s.best==='object') save.best=s.best;
   if (s.skin && typeof s.skin==='object') save.skin=s.skin;
   if (Number.isInteger(Number(s.musicPreset)) && Number(s.musicPreset)>=0 && Number(s.musicPreset)<MUSIC_NAMES.length) { musicPreset=Number(s.musicPreset); save.musicPreset=musicPreset; }
-  if (s.audio && typeof s.audio==='object') audio.load(s.audio);
+  if (s.audio && typeof s.audio==='object') {
+    // Старое сохранение хранило прежние 80 % эффектов как «выбор игрока»: если там осталось значение по умолчанию, берём новое
+    const a={...s.audio}; if((s.audioVer|0)<AUDIO_VER&&a.sfx===0.8)delete a.sfx;
+    audio.load(a);
+  }
   else if (typeof s.musicVol==='number') audio.load({ music: s.musicVol }); // старое сохранение: была одна громкость музыки
 } catch { /* ignore */ }
-function persist() { try { save.audio=audio.settings(); localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch { /* ignore */ } }
+function persist() { try { save.audio=audio.settings(); save.audioVer=AUDIO_VER; localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch { /* ignore */ } }
 
 // ── Уровни ─────────────────────────────────────────────────────
 function classic() {
@@ -272,7 +308,7 @@ function buildLevel(lv) {
   lv.plats.forEach((a,i)=>{
     const pl=normPlat(a);
     const geo=platGeometry(localParts(pl),Math.tan(pl.t*DEG));
-    const m=new THREE.Mesh(geo,platMat(th.colors[i%th.colors.length],th));
+    const m=new THREE.Mesh(geo,platMat(th.colors[i%th.colors.length],th)); applyWet(m.material);
     m.position.set(pl.x,pl.y,pl.z); m.rotation.y=pl.r*DEG; m.userData={k:'p',i,own:true,ownMat:true};
     const ol=new THREE.LineSegments(new THREE.EdgesGeometry(geo,25),outlineMat);
     ol.userData={k:'o',own:true}; ol.visible=mode==='edit'; m.add(ol); outlines.push(ol);
@@ -477,7 +513,7 @@ function toast(t,ms=2200){const el=$('toast');el.textContent=t;el.classList.add(
 
 // ── Сброс: всегда полный (без чекпоинтов) ─────────────────────
 function reset() {
-  clearDust();
+  clearDust(); rain.reset();
   p.set(...L.start); v.set(0,0,0); st.onGround=false;
   got=0; time=0; won=false; jumpBuf=0; coyote=0;
   coins.forEach((c)=>(c.visible=true));
@@ -675,7 +711,7 @@ function setTab(t){
   cv.style.cursor=e?'crosshair':'';
   if(e!==(mode==='edit')){
     mode=e?'edit':'play';audio.sfx(e?'editOn':'editOff');
-    scene.fog.near=e?80:24;scene.fog.far=e?420:150;setFar(e?600:250);
+    setFar(e?600:250); // расстояние тумана считает updateEnv (оно зависит ещё и от погоды)
     if(e){player.visible=shadow.visible=false;setGoalOpen(true);msg.style.display='none';$('ename').value=L.name;syncLevelUI();ed.tx=L.start[0];ed.tz=L.start[2];ed.h=L.start[1];ed.ty=ed.h;hist.length=0;syncUI();fitView();}
     else{player.visible=true;testRun=true;reset();}
   }
@@ -792,6 +828,74 @@ function padEdit(){
   if(pad.back)$('btnTest').click();
 }
 
+
+// ── Окружение: время суток и погода ────────────────────────────
+// Состояние плавно «догоняет» выбор игрока: n — ночь (0..1), w — дождь (0..1), wet — насколько мокрые платформы.
+// Свет, туман, облака и звук считаются из n и w в каждом кадре, а картинка неба меняется на лету, пока кадр
+// чуть притемнён (см. backgroundIntensity). Ждать пересчёта неба в игре не приходится: нужный вариант
+// рисуется заранее, в момент выбора в настройках.
+const TIMES = { day: 'День', night: 'Ночь' }, WEATHERS = { clear: 'Ясно', rain: 'Дождь' };
+const LOOK = {
+  day:       { fog: 0xb0d8ff, amb: 0xffffff, ambK: 0.30, sun: 0xffffff, sunK: 1.30, cloud: 0xffffff, cloudEm: 0x7388b0, dust: 0xeeeae2, fogK: 1 },
+  night:     { fog: 0x0b1530, amb: 0x7087d6, ambK: 0.50, sun: 0xaec4ff, sunK: 0.95, cloud: 0x7a88b8, cloudEm: 0x10172c, dust: 0x6d7698, fogK: 1 },
+  rain:      { fog: 0x8f9aa7, amb: 0xdde4ec, ambK: 0.42, sun: 0xdfe6ee, sunK: 0.50, cloud: 0x9aa3ae, cloudEm: 0x49515c, dust: 0xb9bec6, fogK: 0.7 },
+  nightRain: { fog: 0x0c1220, amb: 0x6a7aa6, ambK: 0.44, sun: 0x93a4d0, sunK: 0.50, cloud: 0x3a4153, cloudEm: 0x0a0e18, dust: 0x50586f, fogK: 0.6 },
+};
+const SUN_POS = new THREE.Vector3(5, 10, 6), MOON_POS = new THREE.Vector3(MOON[0], MOON[1], MOON[2]).multiplyScalar(12.5);
+const env = { time: TIME, weather: WEATHER, n: TIME === 'night' ? 1 : 0, w: WEATHER === 'rain' ? 1 : 0, wet: WEATHER === 'rain' ? 1 : 0, wetApplied: -1, key: skyKey(TIME === 'night', WEATHER === 'rain'), ns: 0, ws: 0 };
+const eA = new THREE.Color(), eB = new THREE.Color(), cloudCol = new THREE.Color(), cloudEm = new THREE.Color();
+const smooth = (x) => x * x * (3 - 2 * x);
+const approach = (x, to, d) => (x < to ? Math.min(to, x + d) : Math.max(to, x - d));
+// Цвет «угла» таблицы LOOK -> out с учётом ночи (nn) и дождя (ww)
+function blendColor(out, prop, nn, ww) {
+  out.set(LOOK.day[prop]).lerp(eB.set(LOOK.night[prop]), nn);
+  eA.set(LOOK.rain[prop]).lerp(eB.set(LOOK.nightRain[prop]), nn);
+  return out.lerp(eA, ww);
+}
+function blendNum(prop, nn, ww) {
+  const a = LOOK.day[prop] + (LOOK.night[prop] - LOOK.day[prop]) * nn, b = LOOK.rain[prop] + (LOOK.nightRain[prop] - LOOK.rain[prop]) * nn;
+  return a + (b - a) * ww;
+}
+function setEnvMaps() {
+  if (!HIGH) return;
+  glossMats.forEach((m) => { m.envMap = envTex; });
+  platMeshes.forEach((m) => { m.material.envMap = envTex; });
+}
+function updateEnv(dt) {
+  if (!menuOpen) { // пока открыто меню, ничего не меняется: смену видно после закрытия
+    env.n = approach(env.n, env.time === 'night' ? 1 : 0, dt / 1.8);
+    env.w = approach(env.w, env.weather === 'rain' ? 1 : 0, dt / 2.6);
+    env.wet = approach(env.wet, env.w > 0.55 ? 1 : 0, env.w > 0.55 ? dt / 5 : dt / 16); // мокнет за ~5 с, сохнет ~16 с
+  }
+  const nn = env.ns = smooth(env.n), ww = env.ws = smooth(env.w);
+  // картинка неба и карта отражений меняются, когда переход пройдёт середину
+  const night = env.n > 0.5, rainy = env.w > 0.5, key = skyKey(night, rainy);
+  if (key !== env.key) {
+    env.key = key; scene.background = skyTex(night, rainy);
+    if (HIGH) { envTex = envFor(night, rainy); setEnvMaps(); }
+  }
+  const mid = (x) => Math.min(1, Math.abs(x - 0.5) * 3.2);
+  scene.backgroundIntensity = 0.1 + 0.9 * Math.min(mid(env.n), mid(env.w)); // в момент смены неба кадр на миг темнеет
+  blendColor(scene.fog.color, 'fog', nn, ww);
+  const fk = blendNum('fogK', nn, ww), edit = mode === 'edit';
+  scene.fog.near = (edit ? 80 : 24) * fk; scene.fog.far = (edit ? 420 : 150) * fk;
+  blendColor(ambient.color, 'amb', nn, ww); ambient.intensity = blendNum('ambK', nn, ww);
+  blendColor(sun.color, 'sun', nn, ww); sun.intensity = blendNum('sunK', nn, ww);
+  sun.position.lerpVectors(SUN_POS, MOON_POS, nn);
+  clouds.setLook(blendColor(cloudCol, 'cloud', nn, ww), blendColor(cloudEm, 'cloudEm', nn, ww));
+  blendColor(dust.material.color, 'dust', nn, ww);
+  if (Math.abs(env.wet - env.wetApplied) > 0.004) { env.wetApplied = env.wet; platMeshes.forEach((m) => applyWet(m.material)); }
+}
+// Выбор в настройках. Нужное небо рисуем сразу (за меню этого не видно), игра потом лишь плавно переходит.
+function setEnv(time, weather) {
+  if (time) env.time = save.time = time;
+  if (weather) env.weather = save.weather = weather;
+  persist();
+  const night = env.time === 'night', rainy = env.weather === 'rain';
+  setTimeout(() => { skyTex(night, rainy); if (HIGH) envFor(night, rainy); }, 0);
+  music.setEnv(night, rainy);
+}
+
 // ── Главный цикл ──────────────────────────────────────────────
 const clock=new THREE.Clock();
 let frameAcc=0;
@@ -808,11 +912,20 @@ function loop(){
   if(menuOpen&&menuScreen==='char')renderPreview(dt);
   // Окружение: ветер крепчает на высоте и в падении; в меню тише
   const live=mode==='play'&&!menuOpen;
-  audio.update(dt,{level:menuOpen?0.45:(mode==='edit'?0.7:1),height:mode==='play'?p.y:camera.position.y,speed:live?Math.hypot(v.x,v.z):0,fall:live?Math.max(0,-v.y):0});
+  updateEnv(dt);
+  rain.update(dt,p,parts,mode==='play'?env.ws:0); // в редакторе камера далеко, дождь там не рисуем (платформы при этом мокрые)
+  audio.update(dt,{level:menuOpen?0.45:(mode==='edit'?0.7:1),height:mode==='play'?p.y:camera.position.y,speed:live?Math.hypot(v.x,v.z):0,fall:live?Math.max(0,-v.y):0,rain:env.ws,night:env.ns});
   clouds.update(dt,clockT,camera.position);
   if(composer)composer.render();else renderer.render(scene,camera);
 }
 
+// Время суток и погода
+for(const[k,n]of Object.entries(TIMES))$('timeSel').add(new Option(n,k));
+for(const[k,n]of Object.entries(WEATHERS))$('weatherSel').add(new Option(n,k));
+$('timeSel').value=env.time;$('weatherSel').value=env.weather;
+$('timeSel').onchange=(e)=>{setEnv(e.target.value,null);e.target.blur();};
+$('weatherSel').onchange=(e)=>{setEnv(null,e.target.value);e.target.blur();};
+music.setEnv(env.time==='night',env.weather==='rain');
 setTool('plat'); syncUI();
 input.onChange(()=>refreshHints());
 input.onPadEvent((name,on)=>toast(on?`${name} подключён`:`${name} отключён`));
