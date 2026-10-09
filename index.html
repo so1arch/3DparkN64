@@ -55,6 +55,7 @@
     /* Настройки: прокручиваемый список и ползунки громкости. У ползунков нет отступов и рамки,
        поэтому бегунок доезжает до самого края (100 %). */
     .sscroll { display: flex; flex-direction: column; align-items: center; gap: 12px; width: min(94vw, 520px); max-height: 68vh; overflow-y: auto; padding: 4px 8px; }
+    .shead { width: 100%; margin-top: 4px; padding-bottom: 4px; border-bottom: 1px solid #557; color: #ffd700; font-size: 13px; text-align: left; letter-spacing: 1px; }
     .sndgrid { display: grid; grid-template-columns: minmax(110px, auto) minmax(90px, 1fr) 44px; gap: 10px 10px; align-items: center; width: 100%; font-size: 13px; }
     .sndgrid small { display: block; font-size: 10px; opacity: 0.6; }
     .sndgrid span { text-align: right; color: #ffeb3b; }
@@ -178,8 +179,12 @@
   <div id="scr-settings" class="screen">
     <div class="title">Настройки</div>
     <div class="sscroll">
+      <div class="shead">Графика и окружение</div>
       <div class="row">Графика: <select id="qualitySel"><option value="high">HIGH (PBR + SSAO)</option><option value="light">LIGHT (Быстро)</option></select></div>
       <div class="row">FPS: <select id="fpsSel"><option value="0">Максимум</option><option value="60">60 FPS</option><option value="30">30 FPS</option></select></div>
+      <div class="row">Время суток: <select id="timeSel"></select></div>
+      <div class="row">Погода: <select id="weatherSel"></select></div>
+      <div class="shead">Звук и музыка</div>
       <div class="row">Музыка: <select id="musicPreset"></select></div>
       <div class="sndgrid">
         <label for="snd_master">Общая громкость</label>
