@@ -46,6 +46,8 @@ export function createClouds(scene, opts = {}) {
   const dummy = new THREE.Object3D();
 
   return {
+    // Цвет облаков: основной и «самосвет» (ночью и в дождь облака темнее)
+    setLook(color, emissive) { mesh.material.color.copy(color); mesh.material.emissive.copy(emissive); },
     // Подстроить поле облаков под уровень: центр, радиус, нижняя и верхняя высоты платформ
     setBands({ cx, cz, r, low, high }) {
       field.cx = cx; field.cz = cz; field.r = Math.max(130, r); field.low = low; field.high = high;
