@@ -13,7 +13,8 @@ const SR = 11025; // частота «консольных» эффектов
 const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
 export const NOTE = (m) => 440 * Math.pow(2, (m - 69) / 12);
 
-const DEFAULTS = { master: 0.85, music: 0.7, sfx: 0.8, amb: 0.55, ui: 0.7, lofi: 0.45 };
+// Эффекты (бег, прыжки, монеты) по умолчанию тише музыки и окружения: раньше 0.8 перекрикивали остальное
+const DEFAULTS = { master: 0.85, music: 0.7, sfx: 0.5, amb: 0.55, ui: 0.7, lofi: 0.45 };
 // Запас громкости шин: при ползунке 100 % звук действительно громкий (ограничитель страхует от перегруза)
 const BUS_GAIN = { music: 2.2, sfx: 1.4, amb: 1.6, ui: 1.4 };
 const taper = (v) => Math.pow(clamp(v), 1.7); // ползунок -> громкость (на слух ровнее, чем линейно)
@@ -329,10 +330,12 @@ class AudioEngine {
       src.connect(f); f.connect(g); g.connect(this.buses.amb); src.start(0, off);
       return { f, g };
     };
-    this._amb = { wind: mk(1, 500, 'lowpass', 0.5, 0), hiss: mk(1.7, 1200, 'bandpass', 0.8, 2.3) };
+    // дождь: шорох капель (широкая полоса) и глухой гул под ним
+    this._amb = { wind: mk(1, 500, 'lowpass', 0.5, 0), hiss: mk(1.7, 1200, 'bandpass', 0.8, 2.3), rainHi: mk(1.6, 2300, 'bandpass', 0.35, 1.1), rainLo: mk(0.9, 750, 'lowpass', 0.5, 3.4) };
   }
 
-  // Раз в кадр. p: level (0..1 общая «слышимость»), height (высота), speed (бег), fall (скорость падения)
+  // Раз в кадр. p: level (0..1 общая «слышимость»), height (высота), speed (бег), fall (скорость падения),
+  // rain (0..1 сила дождя), night (0..1 насколько ночь: птицы затихают)
   update(dt, p = {}) {
     const ctx = this.ctx, a = this._amb;
     if (!ctx || !a) return;
@@ -345,12 +348,15 @@ class AudioEngine {
     a.wind.f.frequency.setTargetAtTime(350 + 1100 * w, t, 0.25);
     a.hiss.g.gain.setTargetAtTime(lvl * 0.1 * w * w * (0.5 + fall), t, 0.25);
     a.hiss.f.frequency.setTargetAtTime(900 + 900 * w, t, 0.25);
+    const rn = clamp(p.rain ?? 0), pat = 0.92 + 0.08 * Math.sin(this._clock * 1.7) * Math.sin(this._clock * 0.43 + 1);
+    a.rainHi.g.gain.setTargetAtTime(lvl * 0.2 * rn * pat, t, 0.4);
+    a.rainLo.g.gain.setTargetAtTime(lvl * 0.09 * rn, t, 0.4);
 
     this._birdT -= dt; this._chT -= dt;
     if (this.vol.amb > 0.02 && lvl > 0.1 && ctx.state === 'running') {
       if (this._birdT <= 0) {
         this._birdT = 3 + Math.random() * 7;
-        if (h < 0.9 && Math.random() < 0.8) this.sfx('bird', { pan: (Math.random() * 2 - 1) * 0.8, vol: (0.4 + Math.random() * 0.6) * lvl, rate: 0.85 + Math.random() * 0.45, jitter: 0 });
+        if (h < 0.9 && (p.rain ?? 0) < 0.25 && (p.night ?? 0) < 0.5 && Math.random() < 0.8) this.sfx('bird', { pan: (Math.random() * 2 - 1) * 0.8, vol: (0.4 + Math.random() * 0.6) * lvl, rate: 0.85 + Math.random() * 0.45, jitter: 0 });
       }
       if (this._chT <= 0) { this._chT = 9 + Math.random() * 14; this.chime(); }
     }
