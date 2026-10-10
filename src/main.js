@@ -933,6 +933,8 @@ for(const[k,n]of Object.entries(WEATHERS))$('weatherSel').add(new Option(n,k));
 $('timeSel').value=env.time;$('weatherSel').value=env.weather;
 $('timeSel').onchange=(e)=>{setEnv(e.target.value,null);e.target.blur();};
 $('weatherSel').onchange=(e)=>{setEnv(null,e.target.value);e.target.blur();};
+// Настройка «Нить ветра» (строка добавляется в «Графика и окружение», сразу после погоды)
+{const row=document.createElement('div');row.className='row';row.append('Нить ветра: ');const sel=document.createElement('select');sel.id='trailSel';sel.add(new Option('Вкл','on'));sel.add(new Option('Выкл','off'));sel.value=trail.isEnabled()?'on':'off';sel.onchange=(e)=>{trail.setEnabled(e.target.value==='on');e.target.blur();};row.append(sel);$('weatherSel').closest('.row').after(row);}
 music.setEnv(env.time==='night',env.weather==='rain');
 setTool('plat'); syncUI();
 input.onChange(()=>refreshHints());
