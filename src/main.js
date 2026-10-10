@@ -11,11 +11,11 @@ import {
 import { paintSky, SUN, MOON, skyKey } from './sky.js';
 import { createClouds } from './clouds.js';
 import { createRain } from './weather.js';
+import { createTrail } from './trail.js';
 import { generate, rngFrom, STYLES, DIFFS } from './gen.js';
 import { music, MUSIC_NAMES } from './music.js';
 import { audio } from './audio.js';
 import { input } from './input.js';
-import { createGulls } from './gulls.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -96,7 +96,7 @@ marker.visible = false; scene.add(marker);
 if (ssao) {
   const ssaoRender = ssao.render.bind(ssao);
   ssao.render = (...args) => {
-    const hide = [helpers, marker, dust, ...rain.objects, ...gulls.objects, ...outlines], was = hide.map((o) => o.visible);
+    const hide = [helpers, marker, dust, ...rain.objects, ...trail.objects, ...outlines], was = hide.map((o) => o.visible);
     hide.forEach((o) => (o.visible = false)); ssaoRender(...args); hide.forEach((o, i) => (o.visible = was[i]));
   };
 }
@@ -116,7 +116,7 @@ const box = (parent, w, h, d, m, x, y, z) => {
 };
 const clouds = createClouds(scene, HIGH ? { count: 36, puffs: 7 } : { count: 20, puffs: 5 });
 const rain = createRain(scene, { high: HIGH });
-const gulls = createGulls(scene, { high: HIGH });
+const trail = createTrail(scene); // нить ветра: след прошлого прохождения
 
 // ── Материалы платформ ─────────────────────────────────────────
 const TILE_M = 2;
@@ -332,7 +332,6 @@ function buildLevel(lv) {
   voidY=B.lo-12;
   clouds.setBands({cx:orbit.cx,cz:orbit.cz,r:Math.max(orbit.rx,orbit.rz)+100,low:B.lo,high:B.hi});
   refreshShapeButtons();
-  gulls.setLevel(lv);
 }
 
 // ── Игрок ──────────────────────────────────────────────────────
@@ -516,12 +515,13 @@ function toast(t,ms=2200){const el=$('toast');el.textContent=t;el.classList.add(
 
 // ── Сброс: всегда полный (без чекпоинтов) ─────────────────────
 function reset() {
-  clearDust(); rain.reset(); gulls.reset();
+  clearDust(); rain.reset();
   p.set(...L.start); v.set(0,0,0); st.onGround=false;
   got=0; time=0; won=false; jumpBuf=0; coyote=0;
   coins.forEach((c)=>(c.visible=true));
   setGoalOpen(!L.req||coins.length===0);
   levelId=lvId(L);
+  trail.show(testRun?null:levelId); trail.begin(p); // нить прошлого прохождения и запись новой попытки
   msg.style.display='none';
   snapCam=true;
 }
@@ -554,7 +554,7 @@ addEventListener('mousemove',(e)=>{if(mode==='play'&&!menuOpen&&e.buttons)camA-=
 function win(){
   won=true; audio.sfx('win'); const total=coins.length; let extra='';
   if(testRun)extra='<br>Тест уровня: рекорд не сохраняется';
-  else{const prev=save.best[levelId];if(prev==null||time<prev){save.best[levelId]=time;extra+='<br>Новый рекорд!';}else extra+=`<br>Рекорд: ${prev.toFixed(1)} с`;persist();}
+  else{const prev=save.best[levelId];if(prev==null||time<prev){save.best[levelId]=time;extra+='<br>Новый рекорд!';}else extra+=`<br>Рекорд: ${prev.toFixed(1)} с`;persist();if(trail.finish(levelId))extra+='<br>Появилась нить ветра: след вашего пробега';}
   msg.style.display='flex';
   msg.innerHTML=`ЗВЕЗДА!<br>Время: ${time.toFixed(1)} с${total?`, монет: ${got}/${total}`:''}${extra}<br><span class="hint-restart">${input.restartHint()}</span>`;
 }
@@ -588,7 +588,7 @@ function update(dt){
   goal.rotation.y+=dt*(goalOpen?2:0.8);
   goal.scale.setScalar(goalOpen?1+0.08*Math.sin(clockT*5):1);
   if(!won&&goal.position.distanceTo(tmp)<1.4){if(goalOpen)win();else if(clockT>goalToastAt){audio.sfx('locked');toast(`Нужны все монеты! Осталось: ${coins.length-got}`);goalToastAt=clockT+1.5;}}
-  if(!won)time+=dt;
+  if(!won){time+=dt;trail.record(dt,p);}
   const best=save.best[levelId],need=L.req&&coins.length&&got<coins.length;
   const hv=`${got}/${coins.length}|${need?1:0}|${time.toFixed(1)}|${best!=null?best.toFixed(1):'--'}`;
   if(hv!==lastHud){lastHud=hv;hCoins.textContent=`×${got}/${coins.length}`;hNeed.textContent=need?'нужны все':'';hTime.textContent=time.toFixed(1);hBest.textContent=best!=null?best.toFixed(1):'--';}
@@ -916,10 +916,10 @@ function loop(){
   // Окружение: ветер крепчает на высоте и в падении; в меню тише
   const live=mode==='play'&&!menuOpen;
   updateEnv(dt);
-  gulls.update(dt,clockT,p,mode==='play'?env.ns:0,camera.position); // чайки-фонарики: только ночью и в игре
   rain.update(dt,p,parts,mode==='play'?env.ws:0); // в редакторе камера далеко, дождь там не рисуем (платформы при этом мокрые)
   audio.update(dt,{level:menuOpen?0.45:(mode==='edit'?0.7:1),height:mode==='play'?p.y:camera.position.y,speed:live?Math.hypot(v.x,v.z):0,fall:live?Math.max(0,-v.y):0,rain:env.ws,night:env.ns});
   clouds.update(dt,clockT,camera.position);
+  trail.update(menuOpen?0:dt,clockT,mode==='play');
   if(composer)composer.render();else renderer.render(scene,camera);
 }
 
