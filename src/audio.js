@@ -108,7 +108,6 @@ export const SFX = {
   putCoin: { dur: 0.2, gain: 0.4, bus: 'ui', make: () => notesFn([[1319, 0, 0.05], [1760, 0.05, 0.13]], { duty: 0.5, decay: 14 }) },
   putGoal: { dur: 0.45, gain: 0.45, bus: 'ui', make: () => notesFn([[784, 0, 0.07], [988, 0.07, 0.07], [1319, 0.14, 0.07], [1568, 0.21, 0.2]], { duty: 0.5, decay: 10 }) },
   putStart: { dur: 0.26, gain: 0.45, bus: 'ui', make: () => notesFn([[392, 0, 0.08], [523, 0.08, 0.16]], { duty: 0.5, decay: 9, tri: 0.5 }) },
-  putFlag: { dur: 0.3, gain: 0.4, bus: 'ui', make: () => notesFn([[659, 0, 0.06], [880, 0.06, 0.06], [1047, 0.12, 0.15]], { duty: 0.25, decay: 12 }) },
   erase: { dur: 0.2, gain: 0.45, bus: 'ui', make: () => { const n = noiseW(5, 2), o = triW(); return (t, u) => (n() * 0.5 + o(520 - 380 * u) * 0.6) * Math.pow(1 - u, 1.8); } },
   undo: { dur: 0.24, gain: 0.4, bus: 'ui', make: () => notesFn([[740, 0, 0.05], [554, 0.06, 0.05], [415, 0.12, 0.1]], { duty: 0.25, decay: 14 }) },
   error: { dur: 0.26, gain: 0.5, bus: 'ui', make: () => notesFn([[147, 0, 0.09], [123, 0.1, 0.14]], { duty: 0.5, decay: 3, tri: 0.2 }) },
