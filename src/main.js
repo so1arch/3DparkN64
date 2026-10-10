@@ -90,6 +90,9 @@ function setFar(f) {
   if (ssao) { ssao.minDistance = 0.125 / f; ssao.maxDistance = 3 / f; }
 }
 setFar(250);
+// Дальность прорисовки в бесконечном режиме: трасса там длинная, поэтому видим дальше, чем на обычных уровнях.
+// Значения подобраны так, чтобы не было заметной просадки FPS: платформы вне кадра отсекаются, а далёкие тонут в тумане.
+const INF_VIEW = { far: 340, fogNear: 32, fogFar: 215 };
 
 let outlines = [];
 const helpers = new THREE.Group(); helpers.visible = false; scene.add(helpers);
@@ -556,11 +559,13 @@ function toast(t,ms=2200){const el=$('toast');el.textContent=t;el.classList.add(
 // ── Бесконечный уровень ───────────────────────────────────────
 // Генератор достраивает трассу вперёд (lv.more), а платформы далеко позади убираются из игры.
 // Счёт — номер самой дальней платформы, на которой стояли. Упал или нажал R: счёт записывается, уровень начинается заново.
-const INF_CHUNK=10, INF_AHEAD=18, INF_BEHIND=24; // сколько платформ достраивать за раз, держать впереди и сзади игрока
+// Впереди держим больше платформ (28 вместо 18), позади меньше (20 вместо 24): суммарно ~48 живых платформ вместо 42
+const INF_CHUNK=10, INF_AHEAD=28, INF_BEHIND=20; // сколько платформ достраивать за раз, держать впереди и сзади игрока
 const infPl=new Map(); // номер платформы -> меш (только живые)
 let infState={first:0,top:0,dirty:false,wait:0};
 function initInf(lv){
   infState={first:0,top:0,dirty:false,wait:0}; infPl.clear();
+  if(mode!=='edit')setFar(lv.len==='inf'?INF_VIEW.far:250); // в редакторе дальность остаётся 600
   if(lv.len!=='inf')return;
   platMeshes.forEach((m)=>infPl.set(m.userData.i,m));
   clouds.setBands({cx:0,cz:0,r:270,low:-4,high:60});
@@ -833,7 +838,7 @@ function setTab(t){
   cv.style.cursor=e?'crosshair':'';
   if(e!==(mode==='edit')){
     mode=e?'edit':'play';audio.sfx(e?'editOn':'editOff');
-    setFar(e?600:250); // расстояние тумана считает updateEnv (оно зависит ещё и от погоды)
+    setFar(e?600:(L.len==='inf'?INF_VIEW.far:250)); // расстояние тумана считает updateEnv (оно зависит ещё и от погоды)
     if(e){player.visible=shadow.visible=false;setGoalOpen(true);msg.style.display='none';$('ename').value=L.name;syncLevelUI();ed.tx=L.start[0];ed.tz=L.start[2];ed.h=L.start[1];ed.ty=ed.h;hist.length=0;syncUI();fitView();}
     else{player.visible=true;testRun=true;reset();}
   }
@@ -1003,7 +1008,8 @@ function updateEnv(dt) {
   scene.backgroundIntensity = 0.1 + 0.9 * Math.min(mid(env.n), mid(env.w)); // в момент смены неба кадр на миг темнеет
   blendColor(scene.fog.color, 'fog', nn, ww);
   const fk = blendNum('fogK', nn, ww), edit = mode === 'edit';
-  scene.fog.near = (edit ? 80 : 24) * fk; scene.fog.far = (edit ? 420 : 150) * fk;
+  const inf = !edit && L && L.len === 'inf'; // в бесконечном режиме туман дальше
+  scene.fog.near = (edit ? 80 : inf ? INF_VIEW.fogNear : 24) * fk; scene.fog.far = (edit ? 420 : inf ? INF_VIEW.fogFar : 150) * fk;
   blendColor(ambient.color, 'amb', nn, ww); ambient.intensity = blendNum('ambK', nn, ww);
   blendColor(sun.color, 'sun', nn, ww); sun.intensity = blendNum('sunK', nn, ww);
   sun.position.lerpVectors(SUN_POS, MOON_POS, nn);
