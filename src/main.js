@@ -674,6 +674,12 @@ addEventListener('keydown',(e)=>{
 addEventListener('keyup',(e)=>{keys[e.code]=false;});
 addEventListener('blur',()=>{for(const k in keys)keys[k]=false;});
 addEventListener('mousemove',(e)=>{if(mode==='play'&&!menuOpen&&e.buttons)camA-=e.movementX*0.005;});
+// Захват курсора на время поворота камеры: он не упирается в край экрана (отпустили кнопку: курсор свободен)
+renderer.domElement.addEventListener('mousedown',()=>{
+  if(mode!=='play'||menuOpen)return;
+  try{const r=renderer.domElement.requestPointerLock();if(r&&r.catch)r.catch(()=>{});}catch{ /* захват недоступен: камера работает как раньше */ }
+});
+addEventListener('mouseup',()=>{if(document.pointerLockElement)document.exitPointerLock();});
 
 function win(){
   won=true; audio.sfx('win'); const total=coins.length; let extra='';
