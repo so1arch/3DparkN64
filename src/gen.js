@@ -12,7 +12,7 @@
 //   long — длинная (в 2.5 раза больше платформ, финальная звезда в конце);
 //   inf  — бесконечная: звезды нет, уровень растёт по мере продвижения игрока. Возвращённый уровень
 //          содержит функцию more(n), которая достраивает ещё n платформ в конец (новые платформы
-//          добавляются в lv.plats и lv.coins). Один и тот же сид всегда даёт одну и ту же бесконечную трассу.
+//          добавляются в lv.plats). Монет в бесконечном уровне нет. Один и тот же сид всегда даёт одну и ту же бесконечную трассу.
 
 import { DEG, MOVE, normPlat, worldParts, closest, partsBounds } from './shapes.js';
 
@@ -350,7 +350,7 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6, len = 'std'
 
   // ---------- Монеты и хабы ----------
   const coins = [], hubs = [];
-  const MAXC = longMode ? 150 : inf ? Infinity : 70;
+  const MAXC = longMode ? 150 : inf ? 0 : 70; // в бесконечном уровне монет нет
   const add = (x, y, z) => { if (coins.length < MAXC) coins.push([q4(x), q4(y), q4(z)]); };
   // Монеты для платформ с номерами from..to-1 (для обычного уровня — сразу для всех)
   function coinPass(from, to) {
