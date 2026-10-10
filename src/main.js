@@ -572,11 +572,13 @@ function infStand(){
 function updateInf(dt){
   if(st.onGround){const i=infStand();if(i>infState.top)infState.top=i;}
   infState.wait-=dt;
+  let changed=false;
   if(L.plats.length-infState.top<INF_AHEAD&&infState.wait<=0){
-    for(let g=0;g<2&&L.plats.length-infState.top<INF_AHEAD;g++)if(!growInf()){infState.wait=1;break;} // тупик генератора: повторим через секунду
+    for(let g=0;g<2&&L.plats.length-infState.top<INF_AHEAD;g++){if(!growInf()){infState.wait=1;break;}changed=true;} // тупик генератора: повторим через секунду
   }
   const lim=infState.top-INF_BEHIND;
-  if(infState.first<lim)pruneInf(lim);
+  if(infState.first<lim){pruneInf(lim);changed=true;}
+  if(changed)gulls.syncInf(L,infState.first); // чайки у новых платформ впереди, у убранных позади их больше нет
 }
 // Записать счёт (рекорд хранится как число платформ: чем больше, тем лучше)
 function commitInf(){
@@ -672,7 +674,7 @@ function update(dt){
   if(L.len==='inf')updateInf(dt);
   const inf=L.len==='inf',best=save.best[levelId],need=L.req&&coins.length&&got<coins.length,bs=best!=null?(inf?String(best):best.toFixed(1)):'--';
   const hv=`${got}/${coins.length}|${need?1:0}|${time.toFixed(1)}|${bs}|${infState.top}`;
-  if(hv!==lastHud){lastHud=hv;hCoins.textContent=inf?`×${got}`:`×${got}/${coins.length}`;hNeed.textContent=inf?`▲ ${infState.top}`:(need?'нужны все':'');hNeed.style.color=inf?'#7dff9a':'#ff5555';hTime.textContent=time.toFixed(1);hBest.textContent=bs;}
+  if(hv!==lastHud){lastHud=hv;hCoins.textContent=inf?'':`×${got}/${coins.length}`;hNeed.textContent=inf?`▲ ${infState.top}`:(need?'нужны все':'');hNeed.style.color=inf?'#7dff9a':'#ff5555';hTime.textContent=time.toFixed(1);hBest.textContent=bs;}
   skinAnim(clockT);
   player.position.copy(p); knightAnim(dt,len>0,st.onGround); player.rotation.y=face;
   // Шаги: звук на каждый «шаг» ног (фаза бега растёт только когда бежим по земле)
