@@ -22,6 +22,10 @@ const FILL_GAP = 21;      // если ближайшая чайка дальше
 const FLEE = 7;           // игрок ближе — чайка отлетает
 const DRIFT = 6.5;        // максимум смещения в сторону от своей точки
 const LIFT = 2.6;         // максимум подъёма при испуге
+const CAM_R = 5.5;        // чайка держится дальше этого от линии «камера → игрок» (чтобы не закрывать обзор)
+const CAM_NEAR = 9;       // у самой камеры радиус больше
+const CAM_PUSH = 9;       // максимум смещения из-за камеры
+const MAX_OFF = 11;       // дальше этого от своей точки чайка не уходит (чтобы всё ещё светить платформе)
 const LIGHT_COLOR = 0xffb866;
 const LIGHT_INT = 100;    // сила света (кандела), подбирайте по вкусу
 const LIGHT_DIST = 24;    // радиус действия света
@@ -29,6 +33,7 @@ const SCALE = 1.4;        // общий размер чайки
 const LAMP_Y = -0.84;     // центр фонаря относительно тела (до масштаба)
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 const approach = (x, to, d) => (x < to ? Math.min(to, x + d) : Math.max(to, x - d));
 
@@ -186,8 +191,8 @@ export function createGulls(scene, { high = true } = {}) {
     // Игрок телепортировался (рестарт): чайки возвращаются на места сразу
     reset: snap,
 
-    // player — позиция ног игрока, night — 0..1 (env.ns), 0 — чаек нет вообще
-    update(dt, t, player, night) {
+    // player — позиция ног игрока, night — 0..1 (env.ns), 0 — чаек нет вообще, cam — позиция камеры (чайки её облетают)
+    update(dt, t, player, night, cam) {
       if (night <= 0.01) {
         if (shown) { shown = false; group.visible = false; slots.forEach((s) => { s.l.intensity = 0; s.g = null; s.f = 0; }); }
         return;
@@ -197,20 +202,40 @@ export function createGulls(scene, { high = true } = {}) {
       glowMat.opacity = 0.9 * night;
       const k = Math.min(1, night * 4);
       const px = player.x, py = player.y + 1, pz = player.z;
-      const follow = 1 - Math.exp(-2.4 * dt);
+      const abx = cam ? px - cam.x : 0, aby = cam ? py - cam.y : 0, abz = cam ? pz - cam.z : 0;
+      const ab2 = abx * abx + aby * aby + abz * abz || 1;
 
       for (const g of rigs) {
         if (!g.active) continue;
 
-        // Куда хочет лететь: на свою точку или прочь от игрока
+        // Куда хочет лететь: на свою точку, но прочь от камеры (и от линии камера → игрок) и от игрока
         T.copy(g.anchor);
-        const dx = T.x - px, dy = T.y - py, dz = T.z - pz, d = Math.hypot(dx, dy, dz);
-        if (d < FLEE) {
-          const s = FLEE - d, hd = Math.hypot(dx, dz);
-          const nx = hd > 0.05 ? dx / hd : Math.cos(g.ph), nz = hd > 0.05 ? dz / hd : Math.sin(g.ph);
-          const push = Math.min(DRIFT, s * 1.1);
-          T.x += nx * push; T.z += nz * push; T.y += Math.min(LIFT, s * 0.6);
+        let camHit = false;
+        for (let it = 0; it < 2; it++) {
+          if (cam) {
+            const u = clamp(((T.x - cam.x) * abx + (T.y - cam.y) * aby + (T.z - cam.z) * abz) / ab2, 0, 1);
+            const ex = T.x - (cam.x + abx * u), ey = T.y - (cam.y + aby * u), ez = T.z - (cam.z + abz * u);
+            const e = Math.hypot(ex, ey, ez), R = CAM_R + (CAM_NEAR - CAM_R) * (1 - u);
+            if (e < R) {
+              const push = Math.min(CAM_PUSH, (R - e) * 1.3);
+              if (e > 0.05) { T.x += (ex / e) * push; T.y += (ey / e) * push; T.z += (ez / e) * push; }
+              else { T.x += Math.cos(g.ph) * push; T.y += push * 0.5; T.z += Math.sin(g.ph) * push; }
+              camHit = true;
+            }
+          }
+          const dx = T.x - px, dy = T.y - py, dz = T.z - pz, d = Math.hypot(dx, dy, dz);
+          if (d < FLEE) {
+            const s2 = FLEE - d, hd = Math.hypot(dx, dz);
+            const nx = hd > 0.05 ? dx / hd : Math.cos(g.ph), nz = hd > 0.05 ? dz / hd : Math.sin(g.ph);
+            const push = Math.min(DRIFT, s2 * 1.1);
+            T.x += nx * push; T.z += nz * push; T.y += Math.min(LIFT, s2 * 0.6);
+          }
         }
+        // не улетаем так далеко, чтобы перестать светить своей платформе
+        const ox2 = T.x - g.anchor.x, oz2 = T.z - g.anchor.z, ho = Math.hypot(ox2, oz2);
+        if (ho > MAX_OFF) { T.x = g.anchor.x + (ox2 / ho) * MAX_OFF; T.z = g.anchor.z + (oz2 / ho) * MAX_OFF; }
+        T.y = Math.min(T.y, g.anchor.y + LIFT + 7);
+        const follow = 1 - Math.exp(-(camHit ? 4.5 : 2.4) * dt); // от камеры уходим бодрее
         const ox = g.pos.x, oy = g.pos.y, oz = g.pos.z;
         g.pos.x += (T.x - g.pos.x) * follow; g.pos.y += (T.y - g.pos.y) * follow; g.pos.z += (T.z - g.pos.z) * follow;
         const vx = (g.pos.x - ox) / dt, vy = (g.pos.y - oy) / dt, vz = (g.pos.z - oz) / dt;
@@ -224,9 +249,12 @@ export function createGulls(scene, { high = true } = {}) {
           g.pos.z + Math.cos(t * 0.55 + g.ph) * 0.45,
         );
         g.d = Math.hypot(rig.position.x - px, rig.position.y - py, rig.position.z - pz);
-        rig.visible = g.d < 120;
+        // если всё же оказалась рядом с камерой — плавно уменьшается и исчезает, а не закрывает экран
+        const fade = cam ? sstep(1.8, 5, Math.hypot(rig.position.x - cam.x, rig.position.y - cam.y, rig.position.z - cam.z)) : 1;
+        rig.visible = g.d < 120 && fade > 0.02;
+        g.fade = fade;
         if (!rig.visible) continue;
-        rig.scale.setScalar(SCALE * k);
+        rig.scale.setScalar(SCALE * k * fade);
 
         // Поворот: в полёте по ходу движения, в покое лениво поглядывает на игрока
         const flying = sp > 0.5;
