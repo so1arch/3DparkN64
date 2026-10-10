@@ -177,19 +177,53 @@ const THEMES = [
   { name:'Нефрит', colors:[0x2e9b6a,0x3fb58a,0x1f7a5a,0x66d19e,0x8fe3b8], rough:0.3, metal:0.3, env:1.2 },
 ];
 const grey = (k) => new THREE.Color().setScalar(Math.max(0, Math.min(1, k)));
+// Лужи: на верхних гранях платформ появляются тёмные зеркальные пятна (по шуму от мировых координат).
+// Количество луж задаёт общий uniform puddleU (0 — сухо, 1 — много): он растёт, пока идёт дождь, и медленно уходит после.
+const puddleU = { value: 0 };
+const PUDDLE_GLSL = `
+float h21(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(h21(i), h21(i + vec2(1.0, 0.0)), f.x), mix(h21(i + vec2(0.0, 1.0)), h21(i + vec2(1.0, 1.0)), f.x), f.y); }`;
+function puddleShader(sh) {
+  sh.uniforms.uPud = puddleU;
+  sh.vertexShader = sh.vertexShader
+    .replace('#include <common>', '#include <common>\nvarying vec3 vWP;\nvarying float vUp;')
+    .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWP = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvUp = normal.y;');
+  let f = sh.fragmentShader
+    .replace('#include <common>', '#include <common>\nvarying vec3 vWP;\nvarying float vUp;\nuniform float uPud;\n' + PUDDLE_GLSL)
+    .replace('#include <color_fragment>', `#include <color_fragment>
+  float pud = 0.0;
+  {
+    float n = vnoise(vWP.xz * 0.32) * 0.65 + vnoise(vWP.xz * 0.85 + 7.3) * 0.35;
+    float t = mix(0.98, 0.55, uPud);
+    pud = smoothstep(t, t + 0.07, n) * smoothstep(0.88, 0.96, vUp);
+  }
+  diffuseColor.rgb *= 1.0 - 0.45 * pud;`);
+  if (HIGH) {
+    f = f.replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = mix(roughnessFactor, 0.04, pud);')
+         .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n  metalnessFactor = mix(metalnessFactor, 0.55, pud);');
+  } else {
+    f = f.replace('#include <lights_phong_fragment>', `#include <lights_phong_fragment>
+  material.specularShininess = mix(material.specularShininess, 220.0, pud);
+  material.specularStrength = mix(material.specularStrength, 1.0, pud);
+  material.specularColor = mix(material.specularColor, vec3(0.9), pud);`);
+  }
+  sh.fragmentShader = f;
+}
 function platMat(color, th) {
   const m = HIGH
     ? new THREE.MeshStandardMaterial({ color, map:albedoTex, roughnessMap:ormTex, metalnessMap:ormTex, bumpMap:bumpTex, bumpScale:0.6, roughness:th.rough, metalness:th.metal, vertexColors:true, envMap:envTex, envMapIntensity:th.env })
     : new THREE.MeshPhongMaterial({ color, map:albedoTex, vertexColors:true, shininess:8+(1-th.rough)*80, specular:grey(0.1+0.3*th.metal+0.3*(1-th.rough)**2) });
   m.userData.base = new THREE.Color(color); m.userData.th = th; // исходные значения: от них считается «мокрый» вид
+  m.onBeforeCompile = puddleShader; m.customProgramCacheKey = () => (HIGH ? 'plat-puddle-hi' : 'plat-puddle-lo');
   return m;
 }
 // Мокрая платформа: темнее, гладче и сильнее отражает небо и свет. wet: 0 — сухо, 1 — насквозь мокро
 const WET_SPEC = new THREE.Color();
 function applyWet(m, wet = env.wet) {
   const { base, th } = m.userData;
-  m.color.copy(base).multiplyScalar(1 - 0.32 * wet);
-  if (HIGH) { m.roughness = th.rough * (1 - 0.72 * wet); m.envMapIntensity = th.env * (1 + 1.2 * wet); }
+  m.color.copy(base).multiplyScalar(1 - 0.42 * wet);
+  if (HIGH) { m.roughness = th.rough * (1 - 0.85 * wet); m.envMapIntensity = th.env * (1 + 1.6 * wet); }
   else { m.shininess = 8 + (1 - th.rough) * 80 + 90 * wet; m.specular.copy(grey(0.1 + 0.3 * th.metal + 0.3 * (1 - th.rough) ** 2)).lerp(WET_SPEC.setScalar(0.75), 0.6 * wet); }
 }
 const glossMats = []; // материалы с отражением неба: у них надо менять карту окружения при смене дня/ночи/погоды
@@ -402,10 +436,11 @@ const {legL,legR,armL,armR}=buildKnight(player,skinMats,darkMat,steelMat);
 scene.add(player);
 
 let skin=SKINS[0], skinId=0;
+let skinWet=0; // 0..1: насколько мокрый персонаж (темнее, глянцевее, сильнее отражает небо)
 function applySkin(sk) {
   skin=sk;
   for (const k of SKIN_KEYS) {
-    skinMats[k].color.setHex(sk[k]); setShine(skinMats[k],sk.rough??0.55,sk.metal??0.1);
+    skinMats[k].color.setHex(sk[k]).multiplyScalar(1-0.3*skinWet); setShine(skinMats[k],(sk.rough??0.55)*(1-0.7*skinWet),sk.metal??0.1); skinMats[k].envMapIntensity=1.2*(1+0.9*skinWet);
     if (pvMats[k]) pvMats[k].color.setHex(sk[k]);
   }
 }
@@ -421,7 +456,7 @@ function knightAnim(dt,moving,grounded) {
 }
 function skinAnim(t) {
   if (!skin.rainbow) return;
-  SKIN_KEYS.forEach((k,i)=>{if(k!=='belt'){const h=(t*0.15+i*0.2)%1;skinMats[k].color.setHSL(h,0.85,0.55);if(pvMats[k])pvMats[k].color.setHSL(h,0.85,0.55);}});
+  SKIN_KEYS.forEach((k,i)=>{if(k!=='belt'){const h=(t*0.15+i*0.2)%1;skinMats[k].color.setHSL(h,0.85,0.55).multiplyScalar(1-0.3*skinWet);if(pvMats[k])pvMats[k].color.setHSL(h,0.85,0.55);}});
 }
 const hexStr=(n)=>'#'+n.toString(16).padStart(6,'0');
 function syncSkinUI() {
@@ -930,7 +965,7 @@ const LOOK = {
   nightRain: { fog: 0x0c1220, amb: 0x6a7aa6, ambK: 0.44, sun: 0x93a4d0, sunK: 0.50, cloud: 0x3a4153, cloudEm: 0x0a0e18, dust: 0x50586f, fogK: 0.6 },
 };
 const SUN_POS = new THREE.Vector3(5, 10, 6), MOON_POS = new THREE.Vector3(MOON[0], MOON[1], MOON[2]).multiplyScalar(12.5);
-const env = { time: TIME, weather: WEATHER, n: TIME === 'night' ? 1 : 0, w: WEATHER === 'rain' ? 1 : 0, wet: WEATHER === 'rain' ? 1 : 0, wetApplied: -1, key: skyKey(TIME === 'night', WEATHER === 'rain'), ns: 0, ws: 0 };
+const env = { time: TIME, weather: WEATHER, n: TIME === 'night' ? 1 : 0, w: WEATHER === 'rain' ? 1 : 0, wet: WEATHER === 'rain' ? 1 : 0, pud: WEATHER === 'rain' ? 1 : 0, wetApplied: -1, key: skyKey(TIME === 'night', WEATHER === 'rain'), ns: 0, ws: 0 };
 const eA = new THREE.Color(), eB = new THREE.Color(), cloudCol = new THREE.Color(), cloudEm = new THREE.Color();
 const smooth = (x) => x * x * (3 - 2 * x);
 const approach = (x, to, d) => (x < to ? Math.min(to, x + d) : Math.max(to, x - d));
@@ -954,7 +989,9 @@ function updateEnv(dt) {
     env.n = approach(env.n, env.time === 'night' ? 1 : 0, dt / 1.8);
     env.w = approach(env.w, env.weather === 'rain' ? 1 : 0, dt / 2.6);
     env.wet = approach(env.wet, env.w > 0.55 ? 1 : 0, env.w > 0.55 ? dt / 5 : dt / 16); // мокнет за ~5 с, сохнет ~16 с
+    env.pud = approach(env.pud, env.w > 0.55 ? 1 : 0, env.w > 0.55 ? dt / 14 : dt / 45); // лужи копятся ~14 с, высыхают ~45 с
   }
+  puddleU.value = smooth(env.pud);
   const nn = env.ns = smooth(env.n), ww = env.ws = smooth(env.w);
   // картинка неба и карта отражений меняются, когда переход пройдёт середину
   const night = env.n > 0.5, rainy = env.w > 0.5, key = skyKey(night, rainy);
@@ -972,7 +1009,7 @@ function updateEnv(dt) {
   sun.position.lerpVectors(SUN_POS, MOON_POS, nn);
   clouds.setLook(blendColor(cloudCol, 'cloud', nn, ww), blendColor(cloudEm, 'cloudEm', nn, ww));
   blendColor(dust.material.color, 'dust', nn, ww);
-  if (Math.abs(env.wet - env.wetApplied) > 0.004) { env.wetApplied = env.wet; platMeshes.forEach((m) => applyWet(m.material)); }
+  if (Math.abs(env.wet - env.wetApplied) > 0.004) { env.wetApplied = env.wet; platMeshes.forEach((m) => applyWet(m.material)); skinWet = env.wet; applySkin(skin); }
 }
 // Выбор в настройках. Нужное небо рисуем сразу (за меню этого не видно), игра потом лишь плавно переходит.
 function setEnv(time, weather) {
@@ -1002,7 +1039,7 @@ function loop(){
   const live=mode==='play'&&!menuOpen;
   updateEnv(dt);
   gulls.update(dt,clockT,p,mode==='play'?env.ns:0,camera.position); // чайки-фонарики: только ночью и в игре
-  rain.update(dt,p,parts,mode==='play'?env.ws:0); // в редакторе камера далеко, дождь там не рисуем (платформы при этом мокрые)
+  rain.update(dt,p,parts,mode==='play'?env.ws:0,env.ns); // в редакторе камера далеко, дождь там не рисуем (платформы при этом мокрые)
   audio.update(dt,{level:menuOpen?0.45:(mode==='edit'?0.7:1),height:mode==='play'?p.y:camera.position.y,speed:live?Math.hypot(v.x,v.z):0,fall:live?Math.max(0,-v.y):0,rain:env.ws,night:env.ns});
   clouds.update(dt,clockT,camera.position);
   trail.update(menuOpen?0:dt,clockT,mode==='play',p,1-env.ns); // нить: днём ярче, ночью прежняя
