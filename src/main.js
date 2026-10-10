@@ -916,7 +916,7 @@ function loop(){
   // Окружение: ветер крепчает на высоте и в падении; в меню тише
   const live=mode==='play'&&!menuOpen;
   updateEnv(dt);
-  gulls.update(dt,clockT,p,mode==='play'?env.ns:0); // чайки-фонарики: только ночью и в игре
+  gulls.update(dt,clockT,p,mode==='play'?env.ns:0,camera.position); // чайки-фонарики: только ночью и в игре
   rain.update(dt,p,parts,mode==='play'?env.ws:0); // в редакторе камера далеко, дождь там не рисуем (платформы при этом мокрые)
   audio.update(dt,{level:menuOpen?0.45:(mode==='edit'?0.7:1),height:mode==='play'?p.y:camera.position.y,speed:live?Math.hypot(v.x,v.z):0,fall:live?Math.max(0,-v.y):0,rain:env.ws,night:env.ns});
   clouds.update(dt,clockT,camera.position);
