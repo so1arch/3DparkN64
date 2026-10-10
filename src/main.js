@@ -638,7 +638,7 @@ addEventListener('mousemove',(e)=>{if(mode==='play'&&!menuOpen&&e.buttons)camA-=
 function win(){
   won=true; audio.sfx('win'); const total=coins.length; let extra='';
   if(testRun)extra='<br>Тест уровня: рекорд не сохраняется';
-  else{const prev=save.best[levelId];if(prev==null||time<prev){save.best[levelId]=time;extra+='<br>Новый рекорд!';}else extra+=`<br>Рекорд: ${prev.toFixed(1)} с`;persist();if(trail.finish(levelId))extra+='<br>Появилась нить ветра: след вашего пробега';}
+  else{const prev=save.best[levelId],rec=prev==null||time<prev;if(rec){save.best[levelId]=time;extra+='<br>Новый рекорд!';}else extra+=`<br>Рекорд: ${prev.toFixed(1)} с`;persist();if(trail.finish(levelId,rec))extra+='<br>Появилась нить ветра: след вашего рекордного пробега';}
   msg.style.display='flex';
   msg.innerHTML=`ЗВЕЗДА!<br>Время: ${time.toFixed(1)} с${total?`, монет: ${got}/${total}`:''}${extra}<br><span class="hint-restart">${input.restartHint()}</span>`;
 }
@@ -1005,7 +1005,7 @@ function loop(){
   rain.update(dt,p,parts,mode==='play'?env.ws:0); // в редакторе камера далеко, дождь там не рисуем (платформы при этом мокрые)
   audio.update(dt,{level:menuOpen?0.45:(mode==='edit'?0.7:1),height:mode==='play'?p.y:camera.position.y,speed:live?Math.hypot(v.x,v.z):0,fall:live?Math.max(0,-v.y):0,rain:env.ws,night:env.ns});
   clouds.update(dt,clockT,camera.position);
-  trail.update(menuOpen?0:dt,clockT,mode==='play',p);
+  trail.update(menuOpen?0:dt,clockT,mode==='play',p,1-env.ns); // нить: днём ярче, ночью прежняя
   if(composer)composer.render();else renderer.render(scene,camera);
 }
 
