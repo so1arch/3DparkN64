@@ -19,8 +19,9 @@ const KEEP = 10;       // сколько уровней помним
 const KEY = 'n64parkour.trails.v1';
 const BODY = 0.8;      // высота нити над ногами игрока
 
-const BASE = 4.5;      // скорость кометы, м/с (бег игрока — 7, так что сама по себе она медленнее)
+const BASE = 7.6;      // скорость кометы, м/с: чуть быстрее бега игрока (7), поэтому догнать её нельзя
 const LEAD = 9;        // на сколько метров по нити комета всегда впереди игрока
+const ALPHA = 0.38;    // общая прозрачность нити (1 — непрозрачная)
 const FLOW = 0.35;     // скорость бегущих по нити штрихов (штрихов в секунду; при плотности 0.35 это ~1 м/с)
 
 // ---------- Шейдер ----------
@@ -35,7 +36,7 @@ void main() {
 }`;
 
 const FRAG = `
-uniform float uTime, uLen, uFront, uComet;
+uniform float uTime, uLen, uFront, uComet, uAlpha;
 uniform vec3 uA, uB;
 varying float vS;
 varying float vW;
@@ -48,7 +49,7 @@ void main() {
   float pulse = d > 0.0 ? exp(-d / 4.0) : 0.0;
   vec3 col = mix(uA, uB, clamp(vS / uLen, 0.0, 1.0));
   col = mix(col, vec3(1.0), pulse * 0.8);
-  float a = 0.95 * rv * mix(0.35, 1.0, dash) * (0.6 + 0.4 * vW) + pulse * 0.7 * rv;
+  float a = uAlpha * rv * mix(0.35, 1.0, dash) * (0.6 + 0.4 * vW) + pulse * uAlpha * 0.45 * rv;
   gl_FragColor = vec4(col, clamp(a, 0.0, 1.0));
   #include <colorspace_fragment>
 }`;
@@ -131,7 +132,7 @@ export function createTrail(scene) {
   const U = { uTime: { value: 0 }, uLen: { value: 1 }, uFront: { value: 0 }, uComet: { value: -100 } };
   const mat = new THREE.ShaderMaterial({
     vertexShader: VERT, fragmentShader: FRAG, transparent: true, depthWrite: false,
-    uniforms: { ...U, uA: { value: new THREE.Color(0x3fd0ff) }, uB: { value: new THREE.Color(0xb48cff) } },
+    uniforms: { ...U, uAlpha: { value: ALPHA }, uA: { value: new THREE.Color(0x3fd0ff) }, uB: { value: new THREE.Color(0xb48cff) } },
   });
 
   let data = null, has = false, shownId = null;
