@@ -19,19 +19,24 @@ const KEEP = 10;       // сколько уровней помним
 const KEY = 'n64parkour.trails.v1';
 const BODY = 0.8;      // высота нити над ногами игрока
 
-const BASE = 7.6;      // скорость кометы, м/с: чуть быстрее бега игрока (7), поэтому догнать её нельзя
-const LEAD = 9;        // на сколько метров по нити комета всегда впереди игрока
-const ALPHA = 0.38;    // общая прозрачность нити (1 — непрозрачная)
+const BASE = 10.5;     // скорость кометы, м/с: заметно быстрее бега игрока (7), поэтому догнать её нельзя
+const LEAD = 12;       // на сколько метров по нити комета всегда впереди игрока
+const ALPHA = 0.17;    // общая прозрачность нити (1 — непрозрачная)
+const HIDE_R = 7;      // рядом с игроком (в этом радиусе, м) нить плавно исчезает, чтобы не мельтешить перед глазами
+const PREF = 'n64parkour.trail.on'; // настройка «Нить ветра: вкл/выкл»
 const FLOW = 0.35;     // скорость бегущих по нити штрихов (штрихов в секунду; при плотности 0.35 это ~1 м/с)
 
 // ---------- Шейдер ----------
 const VERT = `
 attribute float aS;
 attribute float aW;
+uniform vec3 uPlayer;
 varying float vS;
 varying float vW;
+varying float vNear;
 void main() {
   vS = aS; vW = aW;
+  vNear = smoothstep(${1.5}, ${HIDE_R}.0, distance(position, uPlayer));
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }`;
 
@@ -40,6 +45,7 @@ uniform float uTime, uLen, uFront, uComet, uAlpha;
 uniform vec3 uA, uB;
 varying float vS;
 varying float vW;
+varying float vNear;
 void main() {
   float rv = 1.0 - smoothstep(uFront - 2.5, uFront, vS);
   if (rv <= 0.01) discard;
@@ -49,7 +55,7 @@ void main() {
   float pulse = d > 0.0 ? exp(-d / 4.0) : 0.0;
   vec3 col = mix(uA, uB, clamp(vS / uLen, 0.0, 1.0));
   col = mix(col, vec3(1.0), pulse * 0.8);
-  float a = uAlpha * rv * mix(0.35, 1.0, dash) * (0.6 + 0.4 * vW) + pulse * uAlpha * 0.45 * rv;
+  float a = (uAlpha * rv * mix(0.35, 1.0, dash) * (0.6 + 0.4 * vW) + pulse * uAlpha * 0.3 * rv) * vNear;
   gl_FragColor = vec4(col, clamp(a, 0.0, 1.0));
   #include <colorspace_fragment>
 }`;
@@ -129,7 +135,7 @@ export function createTrail(scene) {
   group.visible = false;
   scene.add(group);
 
-  const U = { uTime: { value: 0 }, uLen: { value: 1 }, uFront: { value: 0 }, uComet: { value: -100 } };
+  const U = { uTime: { value: 0 }, uLen: { value: 1 }, uFront: { value: 0 }, uComet: { value: -100 }, uPlayer: { value: new THREE.Vector3(0, -999, 0) } };
   const mat = new THREE.ShaderMaterial({
     vertexShader: VERT, fragmentShader: FRAG, transparent: true, depthWrite: false,
     uniforms: { ...U, uAlpha: { value: ALPHA }, uA: { value: new THREE.Color(0x3fd0ff) }, uB: { value: new THREE.Color(0xb48cff) } },
@@ -140,6 +146,8 @@ export function createTrail(scene) {
   let comet = 0, chase = false;          // позиция кометы по нити, м; chase — идёт попытка, комета не даёт себя догнать
   let idx = 0, prog = 0;                 // где сейчас игрок на нити: номер точки и расстояние от старта, м
   let buf = [], acc = 0;
+  let enabled = true;
+  try { enabled = localStorage.getItem(PREF) !== '0'; } catch { /* вкл по умолчанию */ }
 
   function clear() {
     for (const o of [...group.children]) { group.remove(o); o.geometry.dispose(); }
@@ -193,6 +201,13 @@ export function createTrail(scene) {
     // Всё, что надо прятать при расчёте SSAO
     objects: [group],
 
+    // Настройка «Нить ветра: вкл/выкл». Запись пути идёт и при выключенной нити, чтобы после включения она уже была.
+    isEnabled: () => enabled,
+    setEnabled(on) {
+      enabled = !!on;
+      try { localStorage.setItem(PREF, enabled ? '1' : '0'); } catch { /* ignore */ }
+    },
+
     // Показать нить сохранённого прохождения этого уровня (null — спрятать).
     // Если нить та же, что уже показана, ничего не перестраиваем и анимацию появления не повторяем.
     show(id) {
@@ -223,15 +238,16 @@ export function createTrail(scene) {
       shownId = id;
       showFlat(flat);
       chase = false; comet = 0; // на экране победы комета просто бегает по нити по кругу
-      return first;
+      return first && enabled;
     },
 
     // dt = 0 замораживает анимацию (например, в меню); visible — показывать ли нить; pos — позиция игрока (ноги)
     update(dt, t, visible, pos) {
-      group.visible = has && visible;
+      group.visible = has && visible && enabled;
       if (!group.visible) return;
       const L = data.L;
       U.uTime.value = t;
+      if (pos) U.uPlayer.value.set(pos.x, pos.y + BODY, pos.z);
       if (chase && pos) track(pos);
 
       comet += BASE * dt;
