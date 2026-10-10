@@ -1,13 +1,15 @@
-// src/trail.js — «нить ветра»: одна светящаяся полоска, повторяющая путь прошлого прохождения уровня.
+// src/trail.js — «нить ветра»: одна светящаяся полоска, повторяющая путь лучшего прохождения уровня.
 //
 // Как это работает:
 //   • Пока игрок бежит, раз в 0.1 с запоминается позиция (begin / record).
-//   • Когда игрок доходит до звезды, путь сохраняется для этого уровня (finish) — в localStorage,
-//     хранятся последние 10 уровней. Сорвался вниз — попытка не записывается.
+//   • Когда игрок доходит до звезды с новым рекордом, путь сохраняется для этого уровня (finish) — в localStorage,
+//     хранятся последние 10 уровней. Если рекорд не побит или игрок сорвался вниз, нить остаётся прежней:
+//     она всегда показывает путь лучшего прохождения. Побил рекорд — нить сразу перерисовывается по новому пути.
 //   • Путь сглаживается кривой Catmull-Rom и рисуется одной линией (1 пиксель низкого разрешения игры, в духе N64).
 //   • По нити медленно ползут штрихи, а вдоль неё плывёт яркая «комета». Комета неторопливая (BASE),
 //     но догнать её нельзя: игра следит, где игрок на нити, и если он подбирается ближе LEAD метров,
 //     комета ускоряется и остаётся впереди. Так же нить при появлении разматывается не медленнее, чем бежит игрок.
+//   • Днём нить плотнее и ярче (глубокие насыщенные цвета, золотистая комета), ночью — прежняя, мягкая.
 
 import * as THREE from 'three';
 
@@ -21,10 +23,16 @@ const BODY = 0.8;      // высота нити над ногами игрока
 
 const BASE = 10.5;     // скорость кометы, м/с: заметно быстрее бега игрока (7), поэтому догнать её нельзя
 const LEAD = 12;       // на сколько метров по нити комета всегда впереди игрока
-const ALPHA = 0.17;    // общая прозрачность нити (1 — непрозрачная)
 const HIDE_R = 7;      // рядом с игроком (в этом радиусе, м) нить плавно исчезает, чтобы не мельтешить перед глазами
 const PREF = 'n64parkour.trail.on'; // настройка «Нить ветра: вкл/выкл»
 const FLOW = 0.35;     // скорость бегущих по нити штрихов (штрихов в секунду; при плотности 0.35 это ~1 м/с)
+
+// Внешний вид: ночью (как было) и днём (ярче и заметнее на светлом небе и платформах)
+const ALPHA_NIGHT = 0.17, ALPHA_DAY = 0.62;     // общая прозрачность нити (1 — непрозрачная)
+const FLOOR_NIGHT = 0.35, FLOOR_DAY = 0.7;      // насколько тусклы промежутки между штрихами (1 — нить сплошная)
+const COL_A_NIGHT = 0x3fd0ff, COL_B_NIGHT = 0xb48cff; // цвет нити от старта к финишу
+const COL_A_DAY = 0x0077ff, COL_B_DAY = 0xd02cff;
+const HOT_NIGHT = 0xffffff, HOT_DAY = 0xffe45c;       // цвет «кометы»
 
 // ---------- Шейдер ----------
 const VERT = `
@@ -41,8 +49,8 @@ void main() {
 }`;
 
 const FRAG = `
-uniform float uTime, uLen, uFront, uComet, uAlpha;
-uniform vec3 uA, uB;
+uniform float uTime, uLen, uFront, uComet, uAlpha, uFloor;
+uniform vec3 uA, uB, uHot;
 varying float vS;
 varying float vW;
 varying float vNear;
@@ -54,8 +62,8 @@ void main() {
   float d = uComet - vS;
   float pulse = d > 0.0 ? exp(-d / 4.0) : 0.0;
   vec3 col = mix(uA, uB, clamp(vS / uLen, 0.0, 1.0));
-  col = mix(col, vec3(1.0), pulse * 0.8);
-  float a = (uAlpha * rv * mix(0.35, 1.0, dash) * (0.6 + 0.4 * vW) + pulse * uAlpha * 0.3 * rv) * vNear;
+  col = mix(col, uHot, pulse * 0.8);
+  float a = (uAlpha * rv * mix(uFloor, 1.0, dash) * (0.6 + 0.4 * vW) + pulse * uAlpha * 0.3 * rv) * vNear;
   gl_FragColor = vec4(col, clamp(a, 0.0, 1.0));
   #include <colorspace_fragment>
 }`;
@@ -138,8 +146,21 @@ export function createTrail(scene) {
   const U = { uTime: { value: 0 }, uLen: { value: 1 }, uFront: { value: 0 }, uComet: { value: -100 }, uPlayer: { value: new THREE.Vector3(0, -999, 0) } };
   const mat = new THREE.ShaderMaterial({
     vertexShader: VERT, fragmentShader: FRAG, transparent: true, depthWrite: false,
-    uniforms: { ...U, uAlpha: { value: ALPHA }, uA: { value: new THREE.Color(0x3fd0ff) }, uB: { value: new THREE.Color(0xb48cff) } },
+    uniforms: {
+      ...U, uAlpha: { value: ALPHA_NIGHT }, uFloor: { value: FLOOR_NIGHT },
+      uA: { value: new THREE.Color(COL_A_NIGHT) }, uB: { value: new THREE.Color(COL_B_NIGHT) }, uHot: { value: new THREE.Color(HOT_NIGHT) },
+    },
   });
+  // Цвета ночного и дневного вида: между ними плавно переходим по мере смены времени суток
+  const cA0 = new THREE.Color(COL_A_NIGHT), cA1 = new THREE.Color(COL_A_DAY);
+  const cB0 = new THREE.Color(COL_B_NIGHT), cB1 = new THREE.Color(COL_B_DAY);
+  const cH0 = new THREE.Color(HOT_NIGHT), cH1 = new THREE.Color(HOT_DAY);
+  function setDay(day) {
+    const k = Math.max(0, Math.min(1, day)), u = mat.uniforms;
+    u.uAlpha.value = ALPHA_NIGHT + (ALPHA_DAY - ALPHA_NIGHT) * k;
+    u.uFloor.value = FLOOR_NIGHT + (FLOOR_DAY - FLOOR_NIGHT) * k;
+    u.uA.value.lerpColors(cA0, cA1, k); u.uB.value.lerpColors(cB0, cB1, k); u.uHot.value.lerpColors(cH0, cH1, k);
+  }
 
   let data = null, has = false, shownId = null;
   let reveal = 1, revealT = 2;           // разматывание нити при появлении
@@ -208,7 +229,7 @@ export function createTrail(scene) {
       try { localStorage.setItem(PREF, enabled ? '1' : '0'); } catch { /* ignore */ }
     },
 
-    // Показать нить сохранённого прохождения этого уровня (null — спрятать).
+    // Показать нить сохранённого (лучшего) прохождения этого уровня (null — спрятать).
     // Если нить та же, что уже показана, ничего не перестраиваем и анимацию появления не повторяем.
     show(id) {
       if (id === shownId) return;
@@ -230,21 +251,25 @@ export function createTrail(scene) {
       push(p);
     },
 
-    // Дошли до звезды: сохраняем путь и сразу показываем его. Возвращает true, если нить у уровня появилась впервые.
-    finish(id) {
-      if (buf.length < 12) return false;
+    // Дошли до звезды. record — true, если это новый рекорд: тогда путь сохраняется и нить сразу перерисовывается по нему.
+    // Если рекорд не побит, нить остаётся прежней (путь лучшего прохождения).
+    // Возвращает true, если нить у уровня появилась впервые.
+    finish(id, record = true) {
+      chase = false; comet = 0; // на экране победы комета просто бегает по нити по кругу
+      if (!record || buf.length < 12) return false;
       const first = !get(id), flat = buf.map((v) => Math.round(v * Q));
       put(id, flat);
       shownId = id;
       showFlat(flat);
-      chase = false; comet = 0; // на экране победы комета просто бегает по нити по кругу
       return first && enabled;
     },
 
-    // dt = 0 замораживает анимацию (например, в меню); visible — показывать ли нить; pos — позиция игрока (ноги)
-    update(dt, t, visible, pos) {
+    // dt = 0 замораживает анимацию (например, в меню); visible — показывать ли нить; pos — позиция игрока (ноги);
+    // day — 0..1, насколько сейчас день (0 — ночь: нить мягкая, 1 — день: ярче и плотнее)
+    update(dt, t, visible, pos, day = 0) {
       group.visible = has && visible && enabled;
       if (!group.visible) return;
+      setDay(day);
       const L = data.L;
       U.uTime.value = t;
       if (pos) U.uPlayer.value.set(pos.x, pos.y + BODY, pos.z);
