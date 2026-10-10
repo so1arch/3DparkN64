@@ -17,6 +17,7 @@ import { music, MUSIC_NAMES } from './music.js';
 import { audio } from './audio.js';
 import { input } from './input.js';
 import { createGulls } from './gulls.js';
+import { createGoalOrb } from './goalorb.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -97,7 +98,7 @@ marker.visible = false; scene.add(marker);
 if (ssao) {
   const ssaoRender = ssao.render.bind(ssao);
   ssao.render = (...args) => {
-    const hide = [helpers, marker, dust, ...rain.objects, ...gulls.objects, ...trail.objects, ...outlines], was = hide.map((o) => o.visible);
+    const hide = [helpers, marker, dust, ...rain.objects, ...gulls.objects, ...trail.objects, ...goalOrb.objects, ...outlines], was = hide.map((o) => o.visible);
     hide.forEach((o) => (o.visible = false)); ssaoRender(...args); hide.forEach((o, i) => (o.visible = was[i]));
   };
 }
@@ -264,9 +265,8 @@ function lvId(lv) {
 // ── Построение уровня ──────────────────────────────────────────
 const coinGeo=new THREE.CylinderGeometry(0.4,0.4,0.1,8).rotateX(Math.PI/2);
 const coinMat=gloss(0xffd800,0.28,1,{emissive:0x2a1c00});
-const goalGeo=new THREE.IcosahedronGeometry(0.7,0);
-const goalMat=gloss(0xfff176,0.22,0.9,{emissive:0x6a4a00});
 const goalLockedMat=new THREE.MeshBasicMaterial({color:0x8a94b0,wireframe:true});
+const goalOrb=createGoalOrb(goalLockedMat); // жёлтый светящийся шар на финише
 const outlineMat=new THREE.LineBasicMaterial({color:0x000000,transparent:true,opacity:0.55});
 const orbit={cx:0,cz:0,rx:15,rz:15,top:0};
 let L, levelGroup=new THREE.Group(), parts=[], platMeshes=[], coins=[], goal, goalOpen=true, voidY=-15;
@@ -301,7 +301,7 @@ function platGeometry(lparts, g) {
   geo.computeBoundingSphere();
   return geo;
 }
-function setGoalOpen(open){goalOpen=open;if(goal)goal.material=open?goalMat:goalLockedMat;}
+function setGoalOpen(open){goalOpen=open;if(goal)goalOrb.setOpen(open);}
 let hoverObj=null;
 function buildLevel(lv) {
   scene.remove(levelGroup);
@@ -320,7 +320,7 @@ function buildLevel(lv) {
     levelGroup.add(m); platMeshes.push(m); parts.push(...worldParts(pl));
   });
   lv.coins.forEach(([x,y,z],i)=>{const c=new THREE.Mesh(coinGeo,coinMat);c.position.set(x,y,z);c.userData={k:'c',i};levelGroup.add(c);coins.push(c);});
-  goal=new THREE.Mesh(goalGeo,goalMat); goal.position.set(...lv.goal); goal.userData={k:'g'};
+  goal=goalOrb.mesh; goal.position.set(...lv.goal); goal.rotation.set(0,0,0); goal.scale.setScalar(1);
   levelGroup.add(goal); setGoalOpen(true);
   marker.position.set(lv.start[0],lv.start[1]+0.6,lv.start[2]);
   const B=partsBounds(parts);
@@ -580,8 +580,9 @@ function update(dt){
 
   tmp.set(p.x,p.y+0.8,p.z);
   for(const c of coins){if(!c.visible)continue;c.rotation.y+=dt*4;if(c.position.distanceTo(tmp)<1){c.visible=false;got++;coinCombo=clockT-coinT<1.4?Math.min(coinCombo+1,8):0;coinT=clockT;audio.sfx('coin',{rate:Math.pow(2,coinCombo*2/12),jitter:0});if(got>=coins.length){audio.sfx('allcoins',{delay:0.22});if(L.req){setGoalOpen(true);toast('Все монеты собраны! Беги к звезде');}else toast('Все монеты собраны!');}}}
-  goal.rotation.y+=dt*(goalOpen?2:0.8);
-  goal.scale.setScalar(goalOpen?1+0.08*Math.sin(clockT*5):1);
+  goal.rotation.y+=dt*(goalOpen?1.2:0.5);
+  goal.scale.setScalar(goalOpen?1+0.06*Math.sin(clockT*3):1);
+  goalOrb.update(clockT);
   if(!won&&goal.position.distanceTo(tmp)<1.4){if(goalOpen)win();else if(clockT>goalToastAt){audio.sfx('locked');toast(`Нужны все монеты! Осталось: ${coins.length-got}`);goalToastAt=clockT+1.5;}}
   if(!won){time+=dt;trail.record(dt,p);}
   const best=save.best[levelId],need=L.req&&coins.length&&got<coins.length;
@@ -637,7 +638,7 @@ const fmt=(x)=>String(Math.round(x*100)/100);
 let lastInfo='';
 const GHOST_BOX={coin:[0.8,0.8,0.8,1.3],goal:[1.4,1.4,1.4,1.6],start:[0.8,1.2,0.8,0.6]};
 function updateGuides(){const t=ed.tool,plat=t==='plat';const have=ed.over&&computePlacement();ghostShape.visible=have&&plat;ghostBox.visible=have&&!!GHOST_BOX[t];dropLine.visible=footprint.visible=dot.visible=false;const gx=have?ed.mx:ed.tx,gz=have?ed.mz:ed.tz,gy=have?ed.my:ed.h;grid1.position.set(Math.round(gx),gy+0.03,Math.round(gz));grid2.position.set(Math.round(gx/5)*5,gy+0.03,Math.round(gz/5)*5);let txt='';if(have){if(t==='erase'){ray.setFromCamera(mouse,camera);const hit=ray.intersectObjects(levelGroup.children,false)[0];setHover(hit&&(hit.object.userData.k==='p'||hit.object.userData.k==='c')?hit.object:null);}else{setHover(null);let startY=ed.my;if(plat){if(ed.dirty)rebuildGhost();ghostShape.position.set(ed.mx,ed.my,ed.mz);ghostShape.rotation.y=ed.rot*DEG;}else if(GHOST_BOX[t]){const S=GHOST_BOX[t];ghostBox.scale.set(S[0],S[1],S[2]);ghostBox.position.set(ed.mx,ed.my+S[3],ed.mz);startY=ed.my+S[3];}const bottom=ed.below!=null?ed.below:startY-30;const a=dropGeo.attributes.position;a.setXYZ(0,ed.mx,startY,ed.mz);a.setXYZ(1,ed.mx,bottom,ed.mz);a.needsUpdate=true;dropLine.visible=startY-bottom>0.05;if(ed.below!=null&&ed.my-ed.below>0.05){const f2=plat?footprint:dot;f2.visible=true;f2.position.set(ed.mx,ed.below+0.04,ed.mz);if(plat){f2.rotation.y=ed.rot*DEG;f2.scale.set(1,0.02,1);}}}txt=`X ${fmt(ed.mx)}   Z ${fmt(ed.mz)}   ВЫСОТА ${fmt(ed.my)}`+(ed.below!=null?`   (над платформой +${fmt(ed.my-ed.below)})`:'   (под ним пусто)')+'\n';}else setHover(null);if(t==='draw')refreshDraw(have?[ed.mx,ed.mz]:null);else drawLine.visible=drawPts.visible=false;txt+=`Плоскость: ${fmt(ed.h)}${ed.snap?' (прилипание)':''}   Платформ: ${L.plats.length}/80   Монет: ${L.coins.length}/100`;if(txt!==lastInfo){$('edinfo').textContent=txt;lastInfo=txt;}}
-function updateEdit(dt){if(input.device==='pad')padEdit();ed.yaw+=((keys.KeyQ?1:0)-(keys.KeyE?1:0)-pad.lookX*1.2)*1.8*dt;ed.pitch=Math.max(0.08,Math.min(1.5,ed.pitch-pad.lookY*1.1*dt));ed.dist=Math.max(4,Math.min(180,ed.dist*Math.exp(-pad.zoom*1.4*dt)));const f=(keys.KeyW?1:0)-(keys.KeyS?1:0)+pad.moveY,r=(keys.KeyD?1:0)-(keys.KeyA?1:0)+pad.moveX,sp=ed.dist*0.8*dt;ed.tx+=(-Math.sin(ed.yaw)*f+Math.cos(ed.yaw)*r)*sp;ed.tz+=(-Math.cos(ed.yaw)*f-Math.sin(ed.yaw)*r)*sp;ed.ty+=(ed.h-ed.ty)*(1-Math.exp(-8*dt));const cp=Math.cos(ed.pitch);camera.position.set(ed.tx+Math.sin(ed.yaw)*cp*ed.dist,ed.ty+Math.sin(ed.pitch)*ed.dist,ed.tz+Math.cos(ed.yaw)*cp*ed.dist);camera.lookAt(ed.tx,ed.ty,ed.tz);camera.updateMatrixWorld();updateGuides();coins.forEach((c)=>(c.rotation.y+=dt*4));goal.rotation.y+=dt*2;}
+function updateEdit(dt){if(input.device==='pad')padEdit();ed.yaw+=((keys.KeyQ?1:0)-(keys.KeyE?1:0)-pad.lookX*1.2)*1.8*dt;ed.pitch=Math.max(0.08,Math.min(1.5,ed.pitch-pad.lookY*1.1*dt));ed.dist=Math.max(4,Math.min(180,ed.dist*Math.exp(-pad.zoom*1.4*dt)));const f=(keys.KeyW?1:0)-(keys.KeyS?1:0)+pad.moveY,r=(keys.KeyD?1:0)-(keys.KeyA?1:0)+pad.moveX,sp=ed.dist*0.8*dt;ed.tx+=(-Math.sin(ed.yaw)*f+Math.cos(ed.yaw)*r)*sp;ed.tz+=(-Math.cos(ed.yaw)*f-Math.sin(ed.yaw)*r)*sp;ed.ty+=(ed.h-ed.ty)*(1-Math.exp(-8*dt));const cp=Math.cos(ed.pitch);camera.position.set(ed.tx+Math.sin(ed.yaw)*cp*ed.dist,ed.ty+Math.sin(ed.pitch)*ed.dist,ed.tz+Math.cos(ed.yaw)*cp*ed.dist);camera.lookAt(ed.tx,ed.ty,ed.tz);camera.updateMatrixWorld();updateGuides();coins.forEach((c)=>(c.rotation.y+=dt*4));goal.rotation.y+=dt*1.2;goalOrb.update(clockT);}
 function fitView(){const B=partsBounds(parts);let x0=B.minX,x1=B.maxX,z0=B.minZ,z1=B.maxZ;for(const[x,,z]of[...L.coins,L.goal,L.start]){x0=Math.min(x0,x);x1=Math.max(x1,x);z0=Math.min(z0,z);z1=Math.max(z1,z);}ed.tx=(x0+x1)/2;ed.tz=(z0+z1)/2;ed.dist=Math.min(180,Math.max(10,Math.hypot(x1-x0,z1-z0)*0.9+6));ed.pitch=0.9;}
 function edited(){L.seed=null;L.id=null;L.style=null;buildLevel(L);if(mode==='edit')setGoalOpen(true);$('lvname').textContent=L.name;}
 function erase(){ray.setFromCamera(mouse,camera);const hit=ray.intersectObjects(levelGroup.children,false)[0];const u=hit&&hit.object.userData;if(!u)return;if(u.k==='p'&&L.plats.length>1){pushHist();L.plats.splice(u.i,1);}else if(u.k==='c'){pushHist();L.coins.splice(u.i,1);}else return;audio.sfx('erase');edited();}
