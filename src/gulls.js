@@ -42,8 +42,8 @@ function pickSpots(lv) {
   const plats = lv.plats || [];
   if (!plats.length) return [];
   const R = rngFrom(`gulls|${lv.seed ?? lv.name ?? ''}|${plats.length}`);
-  const cps = lv.cps || [];
-  const isHub = (a) => cps.some((c) => Math.abs(c[0] - a[0]) < 0.01 && Math.abs(c[2] - a[2]) < 0.01);
+  const hubs = lv.hubs || [];
+  const isHub = (a) => hubs.some((c) => Math.abs(c[0] - a[0]) < 0.01 && Math.abs(c[2] - a[2]) < 0.01);
   const nearest = (x, z) => {
     let bi = 0, bd = Infinity;
     plats.forEach((a, i) => { const d = Math.hypot(a[0] - x, a[2] - z); if (d < bd) { bd = d; bi = i; } });
