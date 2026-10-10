@@ -2,8 +2,8 @@
 //
 // Уровень собирается из «глав» — готовых паттернов, знакомых по популярным платформерам и паркур-играм:
 //   острова (Mario 64), столбы, серпантин и лестницы (башни из Tower of Hell), спираль вокруг башни,
-//   узкие балки, горки-пандусы, ритм-прыжки и зигзаг. Между главами стоят большие площадки-хабы
-//   (они же чекпоинты), от которых иногда отходят боковые площадки с монетами.
+//   узкие балки, горки-пандусы, ритм-прыжки и зигзаг. Между главами стоят большие площадки-хабы,
+//   от которых иногда отходят боковые площадки с монетами.
 // Дальность каждого прыжка считается из физики игрока (MOVE), поэтому уровень всегда проходим.
 // Один и тот же сид + стиль + сложность всегда дают один и тот же уровень.
 
@@ -99,7 +99,7 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6) {
     return true;
   }
 
-  // Поставить платформу после текущей. o: w, d, s (форма), k, t (наклон), dy, gap, turn, rot, rise, lat, coin, cp
+  // Поставить платформу после текущей. o: w, d, s (форма), k, t (наклон), dy, gap, turn, rot, rise, lat, coin
   function put(o) {
     const a = ang + (o.turn || 0), ux = Math.sin(a), uz = -Math.cos(a), px = Math.cos(a), pz = Math.sin(a);
     const g = Math.tan((o.t || 0) * DEG), lat = o.lat || 0;
@@ -120,7 +120,7 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6) {
     if (Math.abs(cand[0]) > 235 || Math.abs(cand[2]) > 235) return false;
     const parts = worldParts(normPlat(cand)), b = partsBounds(parts);
     if (!free(parts, b)) return false;
-    plats.push(cand); infos.push({ parts, b, coin: o.coin || 'top', gapIn: o.gap, cp: !!o.cp, from: curIdx });
+    plats.push(cand); infos.push({ parts, b, coin: o.coin || 'top', gapIn: o.gap, hub: !!o.hub, from: curIdx });
     curIdx = plats.length - 1; ang = a; exitY = y + (g * o.d) / 2 + (o.rise || 0);
     return true;
   }
@@ -271,10 +271,10 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6) {
     },
   };
 
-  // Большая площадка-хаб (и чекпоинт) с боковыми площадками за монетами
+  // Большая площадка-хаб с боковыми площадками за монетами
   function hub() {
     const s = pick([1, 2, 10, 6, 0, 1, 2]), w = s === 10 ? sz(8, 10) : sz(7, 10), dy = rr(0.2, 0.9), gap = jg(dy) * 0.75;
-    if (!attempt((turn) => ({ w, d: w, s, dy, gap, turn, coin: 'none', cp: true }), rr(-0.4, 0.4))) return false;
+    if (!attempt((turn) => ({ w, d: w, s, dy, gap, turn, coin: 'none', hub: true }), rr(-0.4, 0.4))) return false;
     for (const sg of [-1, 1]) {
       if (R() > 0.55) continue;
       const sv = [curIdx, ang, exitY], pw = sz(2.4, 3.2), ps = pick([1, 2]), pdy = rr(-0.4, 0.9), pgap = jg(pdy) * 0.8;
@@ -316,12 +316,12 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6) {
   attempt((turn) => ({ w: fw, d: fw, s: fs, dy: fdy, gap: fgap, turn, coin: 'none' }), 0);
   const fin = plats[curIdx];
 
-  // ---------- Монеты и чекпоинты ----------
-  const coins = [], cps = [];
+  // ---------- Монеты и хабы ----------
+  const coins = [], hubs = [];
   const add = (x, y, z) => { if (coins.length < 70) coins.push([q4(x), q4(y), q4(z)]); };
   plats.forEach((a, i) => {
     const info = infos[i];
-    if (info.cp && cps.length < 20) cps.push([a[0], a[1], a[2]]);
+    if (info.hub) hubs.push([a[0], a[1], a[2]]);
     if (i === 0 || a === fin) return;
     if (info.coin === 'top' && R() < 0.6) add(a[0], a[1] + 1.3, a[2]);
     if (info.coin === 'branch') { add(a[0] - 0.9, a[1] + 1.3, a[2]); add(a[0], a[1] + 1.6, a[2]); add(a[0] + 0.9, a[1] + 1.3, a[2]); }
@@ -334,7 +334,7 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6) {
 
   return {
     name: `${STYLES[style]}: ${seed}`, seed: String(seed), style, diff,
-    plats, coins, cps, goal: [fin[0], fin[1] + 1.6, fin[2]], start: [0, 0, 0],
+    plats, coins, hubs, goal: [fin[0], fin[1] + 1.6, fin[2]], start: [0, 0, 0],
     shapes: [], req: false, theme: Math.floor(R() * nThemes),
   };
 }
