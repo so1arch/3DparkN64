@@ -3,6 +3,9 @@
 // • Места выбираются из платформ уровня детерминированно (один уровень — одни и те же места):
 //   всегда у старта и у звезды, дальше выборочно, с минимальным расстоянием друг от друга;
 //   если участок без света получается слишком длинным, чайка ставится принудительно.
+// • В бесконечном уровне (lv.len === 'inf') места выбираются по мере достройки трассы (syncInf):
+//   решение для каждой платформы зависит только от неё и от предыдущих, поэтому уже выбранные места не меняются.
+//   Чайки есть у платформ, которые ещё не убраны из игры; освободившиеся чайки переезжают к новым платформам впереди.
 // • Игрок подошёл ближе FLEE — чайка плавно отлетает (и чуть поднимается), но остаётся
 //   в радиусе света платформы. Ушёл — возвращается на своё место.
 // • Парение: покачивание вверх-вниз, лёгкий дрейф, медленные взмахи крыльев, качающийся фонарь.
@@ -157,6 +160,7 @@ export function createGulls(scene, { high = true } = {}) {
   const rigs = Array.from({ length: MAX_GULLS }, () => ({
     ...buildRig(), active: false, pos: new THREE.Vector3(), anchor: new THREE.Vector3(),
     lp: new THREE.Vector3(), ph: 0, yaw: 0, fp: 0, bank: 0, d: Infinity,
+    sid: -1, // бесконечный уровень: номер платформы, к которой прикреплена чайка
   }));
 
   // Живые источники света
@@ -171,22 +175,79 @@ export function createGulls(scene, { high = true } = {}) {
 
   function snap() { rigs.forEach((g) => g.pos.copy(g.anchor)); }
 
+  // ── Бесконечный уровень ──────────────────────────────────────
+  let inf = null; // { seed, n — сколько платформ уже разобрано, chosen — выбранные места по порядку }
+
+  // Разбираем только новые платформы. Решение по платформе зависит от неё самой (свой генератор случайных чисел)
+  // и от нескольких последних выбранных мест, поэтому уже принятые решения не меняются, когда трасса растёт.
+  function extendInf(lv) {
+    const plats = lv.plats, hubs = (lv.hubs || []).slice(-24);
+    const isHub = (a) => hubs.some((c) => Math.abs(c[0] - a[0]) < 0.01 && Math.abs(c[2] - a[2]) < 0.01);
+    for (let i = inf.n; i < plats.length; i++) {
+      const a = plats[i];
+      let take = i === 0;
+      if (!take) {
+        const roll = rngFrom(`gulls|${inf.seed}|${i}`)();
+        let near = Infinity;
+        for (const s of inf.chosen.slice(-8)) near = Math.min(near, Math.hypot(a[0] - s.px, a[2] - s.pz, (a[1] - s.py) * 0.5));
+        const p = clamp(0.22 + 0.05 * (Math.min(a[3], a[4]) - 3) + (isHub(a) ? 0.25 : 0), 0.12, 0.7);
+        take = near >= MIN_GAP && (roll < p || near >= FILL_GAP);
+      }
+      if (!take) continue;
+      const R = rngFrom(`gulls|${inf.seed}|spot|${i}`), ang = R() * Math.PI * 2, r = 0.8 + R() * 1.2;
+      inf.chosen.push({
+        i, px: a[0], py: a[1], pz: a[2],
+        x: a[0] + Math.cos(ang) * r, z: a[2] + Math.sin(ang) * r,
+        y: a[1] + HOVER + (R() - 0.5) * 0.8, ph: R() * Math.PI * 2, yaw: R() * Math.PI * 2,
+      });
+    }
+    inf.n = plats.length;
+  }
+
+  // first — номер самой старой платформы, которая ещё есть в игре
+  function syncInf(lv, first = 0) {
+    if (!inf) return;
+    extendInf(lv);
+    const want = inf.chosen.filter((s) => s.i >= first).slice(0, MAX_GULLS);
+    const ids = new Set(want.map((s) => s.i));
+    const spare = rigs.filter((g) => !ids.has(g.sid)); // свободные и те, чьё место осталось позади
+    for (const s of want) {
+      if (rigs.some((g) => g.sid === s.i)) continue;
+      const g = spare.pop();
+      if (!g) break;
+      g.sid = s.i; g.active = true; g.rig.visible = false;
+      g.anchor.set(s.x, s.y, s.z); g.pos.copy(g.anchor);
+      g.ph = s.ph; g.yaw = s.yaw; g.bank = 0; g.d = Infinity;
+    }
+    for (const g of rigs) if (g.sid >= 0 && !ids.has(g.sid)) { g.active = false; g.sid = -1; g.rig.visible = false; }
+  }
+
   return {
     objects,
 
     // Расставить чаек под уровень (дёшево, можно вызывать при каждой перестройке)
     setLevel(lv) {
+      slots.forEach((s) => { s.g = null; s.f = 0; s.l.intensity = 0; });
+      if (lv.len === 'inf') {
+        inf = { seed: String(lv.seed ?? ''), n: 0, chosen: [] };
+        rigs.forEach((g) => { g.active = false; g.sid = -1; g.rig.visible = false; });
+        syncInf(lv, 0);
+        return;
+      }
+      inf = null;
       const spots = pickSpots(lv);
       rigs.forEach((g, i) => {
         const s = spots[i];
-        g.active = !!s;
+        g.active = !!s; g.sid = -1;
         g.rig.visible = false;
         if (!s) return;
         g.anchor.set(s.x, s.y, s.z); g.pos.copy(g.anchor);
         g.ph = s.ph; g.yaw = s.yaw; g.bank = 0; g.d = Infinity;
       });
-      slots.forEach((s) => { s.g = null; s.f = 0; s.l.intensity = 0; });
     },
+
+    // Бесконечный уровень: трасса выросла и/или старые платформы убраны — обновить места чаек
+    syncInf,
 
     // Игрок телепортировался (рестарт): чайки возвращаются на места сразу
     reset: snap,
