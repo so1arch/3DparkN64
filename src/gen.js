@@ -5,7 +5,14 @@
 //   узкие балки, горки-пандусы, ритм-прыжки и зигзаг. Между главами стоят большие площадки-хабы,
 //   от которых иногда отходят боковые площадки с монетами.
 // Дальность каждого прыжка считается из физики игрока (MOVE), поэтому уровень всегда проходим.
-// Один и тот же сид + стиль + сложность всегда дают один и тот же уровень.
+// Один и тот же сид + стиль + сложность + длина всегда дают один и тот же уровень.
+//
+// Длина уровня (LENS):
+//   std  — стандартная (как раньше: 26 / 36 / 46 платформ в зависимости от сложности);
+//   long — длинная (в 2.5 раза больше платформ, финальная звезда в конце);
+//   inf  — бесконечная: звезды нет, уровень растёт по мере продвижения игрока. Возвращённый уровень
+//          содержит функцию more(n), которая достраивает ещё n платформ в конец (новые платформы
+//          добавляются в lv.plats и lv.coins). Один и тот же сид всегда даёт одну и ту же бесконечную трассу.
 
 import { DEG, MOVE, normPlat, worldParts, closest, partsBounds } from './shapes.js';
 
@@ -22,6 +29,7 @@ export const STYLES = {
   beams: 'Балки', ramps: 'Горки', hopper: 'Тренажёр прыжков',
 };
 export const DIFFS = { 1: 'Лёгкий', 2: 'Средний', 3: 'Сложный' };
+export const LENS = { std: 'Стандартная', long: 'Длинная', inf: 'Бесконечная' };
 
 const DIFF = {
   1: { gapF: [0.22, 0.5], size: [3.6, 5.4], up: 1.0, beam: 2.6, total: 26 },
@@ -65,18 +73,20 @@ export function gapParts(P, Q) {
 const q4 = (x) => Math.round(x * 4) / 4;
 const rS = (x) => Math.round(x * 2) / 2;
 
-export function generate(seed, style = 'mix', diff = 2, nThemes = 6) {
+export function generate(seed, style = 'mix', diff = 2, nThemes = 6, len = 'std') {
   if (!STYLES[style]) style = 'mix';
+  if (!LENS[len]) len = 'std';
   diff = DIFF[diff] ? +diff : 2;
   const D = DIFF[diff];
-  const R = rngFrom(`${seed}|${style}|${diff}`);
+  // Стандартная длина использует прежнюю строку сида, поэтому старые уровни и ссылки не меняются
+  const R = rngFrom(len === 'std' ? `${seed}|${style}|${diff}` : `${seed}|${style}|${diff}|${len}`);
   const rr = (a, b) => a + R() * (b - a);
   const ri = (a, b) => Math.floor(rr(a, b + 1));
   const pick = (arr) => arr[Math.floor(R() * arr.length)];
   const sz = (a, b) => rS(rr(a, b));
 
   const plats = [], infos = [];
-  let curIdx = 0, ang = rr(-0.5, 0.5), exitY = 0;
+  let curIdx = 0, ang = rr(-0.5, 0.5), exitY = 0, deadTo = 0;
 
   function reg(a, extra) {
     const parts = worldParts(normPlat(a)), b = partsBounds(parts);
@@ -89,8 +99,8 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6) {
   // Нет ли конфликта с другими платформами (пересечение или нехватка места над головой)
   function free(parts, b) {
     for (let i = 0; i < infos.length; i++) {
-      if (i === curIdx) continue;
       const o = infos[i];
+      if (i === curIdx || o.dead) continue; // dead: старые платформы бесконечного уровня, их уже нет в игре
       if (b.minX - o.b.maxX > 0.8 || o.b.minX - b.maxX > 0.8 || b.minZ - o.b.maxZ > 0.8 || o.b.minZ - b.maxZ > 0.8) continue;
       if (gapParts(parts, o.parts) >= 0.8) continue;
       if (b.lo >= o.b.hi + 2.2 || o.b.lo >= b.hi + 2.2) continue; // одна над другой с запасом
@@ -120,8 +130,9 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6) {
     if (Math.abs(cand[0]) > 235 || Math.abs(cand[2]) > 235) return false;
     const parts = worldParts(normPlat(cand)), b = partsBounds(parts);
     if (!free(parts, b)) return false;
-    plats.push(cand); infos.push({ parts, b, coin: o.coin || 'top', gapIn: o.gap, hub: !!o.hub, from: curIdx });
-    curIdx = plats.length - 1; ang = a; exitY = y + (g * o.d) / 2 + (o.rise || 0);
+    const ey = y + (g * o.d) / 2 + (o.rise || 0);
+    plats.push(cand); infos.push({ parts, b, coin: o.coin || 'top', gapIn: o.gap, hub: !!o.hub, from: curIdx, ang: a, ey });
+    curIdx = plats.length - 1; ang = a; exitY = ey;
     return true;
   }
 
@@ -299,42 +310,85 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6) {
     return name === 'spiral' ? segs.spiral(n, exitY > 35) : segs[name](n);
   };
 
-  const target = Math.min(60, D.total + ri(-4, 6));
-  let fails = 0, last = '', pi = 0;
-  while (plats.length < target && fails < 4) {
-    let name;
-    if (style === 'mix') { do name = pick(ALL); while (name === last); } else name = PLAN[style][pi++ % PLAN[style].length];
-    last = name;
-    const before = plats.length;
-    if (!run(name) || plats.length === before) fails++;
-    if (plats.length < target && R() < 0.85) hub();
+  // Тупик: возвращаемся на несколько платформ назад и продолжаем трассу оттуда (получается развилка)
+  function backtrack() {
+    const j = Math.max(1, curIdx - ri(1, 10)), o = infos[j];
+    if (o && !o.dead && o.ang !== undefined) { curIdx = j; ang = o.ang; exitY = o.ey; }
   }
+  // Дописывает главы, пока платформ не станет target (или пока подряд не случится maxFails неудач).
+  // retries: сколько раз можно вернуться назад, если трасса зашла в тупик (у стандартной длины их нет)
+  let last = '', pi = 0;
+  function grow(target, maxFails, retries = 0) {
+    let fails = 0;
+    for (;;) {
+      while (plats.length < target && fails < maxFails) {
+        let name;
+        if (style === 'mix') { do name = pick(ALL); while (name === last); } else name = PLAN[style][pi++ % PLAN[style].length];
+        last = name;
+        const before = plats.length;
+        if (!run(name) || plats.length === before) fails++;
+        if (plats.length < target && R() < 0.85) hub();
+      }
+      if (plats.length >= target || retries-- <= 0) break;
+      backtrack(); fails = 0;
+    }
+  }
+
+  const longMode = len === 'long', inf = len === 'inf';
+  // std: как раньше (D.total ± разброс, не больше 60); long: в 2.5 раза больше (не больше 130); inf: стартовый отрезок
+  const target = inf ? 24 : Math.min(longMode ? 130 : 60, Math.round(D.total * (longMode ? 2.5 : 1)) + ri(-4, 6));
+  grow(target, longMode ? 6 : inf ? 6 : 4, longMode ? 12 : inf ? 6 : 0);
   if (plats.length < 8) segs.islands(10);
 
-  // Финал: большая площадка со звездой
-  const fs = pick([1, 10, 2]), fw = fs === 10 ? sz(8, 9) : sz(6, 8), fdy = rr(0.2, 0.8), fgap = jg(0.5) * 0.75;
-  attempt((turn) => ({ w: fw, d: fw, s: fs, dy: fdy, gap: fgap, turn, coin: 'none' }), 0);
-  const fin = plats[curIdx];
+  // Финал: большая площадка со звездой (в бесконечном уровне её нет)
+  let fin = null;
+  if (!inf) {
+    const fs = pick([1, 10, 2]), fw = fs === 10 ? sz(8, 9) : sz(6, 8), fdy = rr(0.2, 0.8), fgap = jg(0.5) * 0.75;
+    attempt((turn) => ({ w: fw, d: fw, s: fs, dy: fdy, gap: fgap, turn, coin: 'none' }), 0);
+    fin = plats[curIdx];
+  }
 
   // ---------- Монеты и хабы ----------
   const coins = [], hubs = [];
-  const add = (x, y, z) => { if (coins.length < 70) coins.push([q4(x), q4(y), q4(z)]); };
-  plats.forEach((a, i) => {
-    const info = infos[i];
-    if (info.hub) hubs.push([a[0], a[1], a[2]]);
-    if (i === 0 || a === fin) return;
-    if (info.coin === 'top' && R() < 0.6) add(a[0], a[1] + 1.3, a[2]);
-    if (info.coin === 'branch') { add(a[0] - 0.9, a[1] + 1.3, a[2]); add(a[0], a[1] + 1.6, a[2]); add(a[0] + 0.9, a[1] + 1.3, a[2]); }
-  });
-  // дуги из монет над длинными прыжками (по порядку постановки платформ)
-  for (let i = 1; i < plats.length; i++) {
-    const A = plats[infos[i].from], B = plats[i];
-    if (infos[i].gapIn >= 2.8 && infos[i].coin !== 'branch' && R() < 0.5) add((A[0] + B[0]) / 2, Math.max(A[1], B[1]) + 2.2, (A[2] + B[2]) / 2);
+  const MAXC = longMode ? 150 : inf ? Infinity : 70;
+  const add = (x, y, z) => { if (coins.length < MAXC) coins.push([q4(x), q4(y), q4(z)]); };
+  // Монеты для платформ с номерами from..to-1 (для обычного уровня — сразу для всех)
+  function coinPass(from, to) {
+    for (let i = from; i < to; i++) {
+      const a = plats[i], info = infos[i];
+      if (info.hub) hubs.push([a[0], a[1], a[2]]);
+      if (i === 0 || a === fin) continue;
+      if (info.coin === 'top' && R() < 0.6) add(a[0], a[1] + 1.3, a[2]);
+      if (info.coin === 'branch') { add(a[0] - 0.9, a[1] + 1.3, a[2]); add(a[0], a[1] + 1.6, a[2]); add(a[0] + 0.9, a[1] + 1.3, a[2]); }
+    }
+    // дуги из монет над длинными прыжками (по порядку постановки платформ)
+    for (let i = Math.max(1, from); i < to; i++) {
+      const A = plats[infos[i].from], B = plats[i];
+      if (infos[i].gapIn >= 2.8 && infos[i].coin !== 'branch' && R() < 0.5) add((A[0] + B[0]) / 2, Math.max(A[1], B[1]) + 2.2, (A[2] + B[2]) / 2);
+    }
   }
+  coinPass(0, plats.length);
 
-  return {
-    name: `${STYLES[style]}: ${seed}`, seed: String(seed), style, diff,
-    plats, coins, hubs, goal: [fin[0], fin[1] + 1.6, fin[2]], start: [0, 0, 0],
+  const end = inf ? plats[curIdx] : fin;
+  const level = {
+    name: `${STYLES[style]}: ${seed}${longMode ? ' · длинный' : inf ? ' · ∞' : ''}`, seed: String(seed), style, diff, len,
+    plats, coins, hubs, goal: [end[0], end[1] + 1.6, end[2]], start: [0, 0, 0],
     shapes: [], req: false, theme: Math.floor(R() * nThemes),
   };
+
+  // Бесконечный уровень: достроить ещё n платформ. Возвращает, сколько добавлено (0 — место закончилось).
+  // Старые платформы (дальше 60 назад) забываются, поэтому трасса может снова пройти по тем же местам.
+  if (inf) {
+    level.more = (n = 10) => {
+      const from = plats.length;
+      grow(from + n, 8, 12);
+      if (plats.length === from) return 0; // совсем тупик: вызывающий может попробовать позже
+      while (deadTo < curIdx - 60) { const o = infos[deadTo++]; o.dead = true; o.parts = null; }
+      coinPass(from, plats.length);
+      const e = plats[curIdx];
+      level.goal = [e[0], e[1] + 1.6, e[2]];
+      return plats.length - from;
+    };
+  }
+  return level;
 }
