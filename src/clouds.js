@@ -15,11 +15,8 @@ const sstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a)
 export function createClouds(scene, opts = {}) {
   const COUNT = opts.count ?? 36, PUFFS = opts.puffs ?? 7; // в лёгком режиме облаков меньше и они проще
   const R = rng(2024);
-  const mesh = new THREE.InstancedMesh(
-    new THREE.SphereGeometry(1, 7, 5),
-    new THREE.MeshLambertMaterial({ color: 0xffffff, emissive: 0x7388b0, flatShading: true }),
-    COUNT * PUFFS
-  );
+  const cloudMat = new THREE.MeshLambertMaterial({ color: 0xffffff, emissive: 0x7388b0, flatShading: true });
+  const mesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 7, 5), cloudMat, COUNT * PUFFS);
   mesh.frustumCulled = false;
   mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   scene.add(mesh);
@@ -46,11 +43,14 @@ export function createClouds(scene, opts = {}) {
   const dummy = new THREE.Object3D();
 
   return {
-    // Цвет облаков: основной и «самосвет» (ночью и в дождь облака темнее)
-    setLook(color, emissive) { mesh.material.color.copy(color); mesh.material.emissive.copy(emissive); },
     // Подстроить поле облаков под уровень: центр, радиус, нижняя и верхняя высоты платформ
     setBands({ cx, cz, r, low, high }) {
       field.cx = cx; field.cz = cz; field.r = Math.max(130, r); field.low = low; field.high = high;
+    },
+    // Ночью облака тёмно-синие
+    setNight(on) {
+      cloudMat.color.setHex(on ? 0x5a6a96 : 0xffffff);
+      cloudMat.emissive.setHex(on ? 0x0e1530 : 0x7388b0);
     },
     update(dt, t, cam) {
       const k = first ? 1 : 1 - Math.exp(-2 * dt);
