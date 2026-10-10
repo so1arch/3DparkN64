@@ -15,6 +15,7 @@ import { generate, rngFrom, STYLES, DIFFS } from './gen.js';
 import { music, MUSIC_NAMES } from './music.js';
 import { audio } from './audio.js';
 import { input } from './input.js';
+import { createGulls } from './gulls.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -95,7 +96,7 @@ marker.visible = false; scene.add(marker);
 if (ssao) {
   const ssaoRender = ssao.render.bind(ssao);
   ssao.render = (...args) => {
-    const hide = [helpers, marker, dust, ...rain.objects, ...outlines], was = hide.map((o) => o.visible);
+    const hide = [helpers, marker, dust, ...rain.objects, ...gulls.objects, ...outlines], was = hide.map((o) => o.visible);
     hide.forEach((o) => (o.visible = false)); ssaoRender(...args); hide.forEach((o, i) => (o.visible = was[i]));
   };
 }
@@ -115,6 +116,7 @@ const box = (parent, w, h, d, m, x, y, z) => {
 };
 const clouds = createClouds(scene, HIGH ? { count: 36, puffs: 7 } : { count: 20, puffs: 5 });
 const rain = createRain(scene, { high: HIGH });
+const gulls = createGulls(scene, { high: HIGH });
 
 // ── Материалы платформ ─────────────────────────────────────────
 const TILE_M = 2;
@@ -330,6 +332,7 @@ function buildLevel(lv) {
   voidY=B.lo-12;
   clouds.setBands({cx:orbit.cx,cz:orbit.cz,r:Math.max(orbit.rx,orbit.rz)+100,low:B.lo,high:B.hi});
   refreshShapeButtons();
+  gulls.setLevel(lv);
 }
 
 // ── Игрок ──────────────────────────────────────────────────────
@@ -513,7 +516,7 @@ function toast(t,ms=2200){const el=$('toast');el.textContent=t;el.classList.add(
 
 // ── Сброс: всегда полный (без чекпоинтов) ─────────────────────
 function reset() {
-  clearDust(); rain.reset();
+  clearDust(); rain.reset(); gulls.reset();
   p.set(...L.start); v.set(0,0,0); st.onGround=false;
   got=0; time=0; won=false; jumpBuf=0; coyote=0;
   coins.forEach((c)=>(c.visible=true));
@@ -913,6 +916,7 @@ function loop(){
   // Окружение: ветер крепчает на высоте и в падении; в меню тише
   const live=mode==='play'&&!menuOpen;
   updateEnv(dt);
+  gulls.update(dt,clockT,p,mode==='play'?env.ns:0); // чайки-фонарики: только ночью и в игре
   rain.update(dt,p,parts,mode==='play'?env.ws:0); // в редакторе камера далеко, дождь там не рисуем (платформы при этом мокрые)
   audio.update(dt,{level:menuOpen?0.45:(mode==='edit'?0.7:1),height:mode==='play'?p.y:camera.position.y,speed:live?Math.hypot(v.x,v.z):0,fall:live?Math.max(0,-v.y):0,rain:env.ws,night:env.ns});
   clouds.update(dt,clockT,camera.position);
