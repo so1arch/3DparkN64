@@ -90,9 +90,13 @@ export function createGoalOrb(lockedMat) {
     s.scale.setScalar(size); s.renderOrder = order; mesh.add(s); fx.push(s); return s;
   };
   sprite(haloTex, HALO_SIZE, 4);
-  const raysA = sprite(raysTex, RAYS_SIZE, 7, { blending: THREE.AdditiveBlending, opacity: 0.8 });
-  const raysB = sprite(raysTex, RAYS_SIZE * 0.7, 7, { blending: THREE.AdditiveBlending, opacity: 0.55 });
-  const glow = sprite(glowTex, GLOW_SIZE, 8, { blending: THREE.AdditiveBlending, opacity: 0.9 });
+  // Лучи и свечение — это свет в воздухе, а не плоская картинка в мире. Спрайт — плоский квад в плоскости центра шара,
+  // и при включённой проверке глубины платформа, которая ближе к камере, отрезала бы его по линии пересечения.
+  // Поэтому для аддитивных слоёв проверка глубины выключена: они накладываются поверх сцены, как блик (bloom).
+  // Тёмный ореол остаётся с проверкой глубины: поверх близких предметов он выглядел бы пятном.
+  const raysA = sprite(raysTex, RAYS_SIZE, 7, { blending: THREE.AdditiveBlending, opacity: 0.8, depthTest: false });
+  const raysB = sprite(raysTex, RAYS_SIZE * 0.7, 7, { blending: THREE.AdditiveBlending, opacity: 0.55, depthTest: false });
+  const glow = sprite(glowTex, GLOW_SIZE, 8, { blending: THREE.AdditiveBlending, opacity: 0.9, depthTest: false });
 
   // Искры внутри шара и тонкие линии между ними
   const N = 8, base = [];
