@@ -5,6 +5,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js';
 import { SSRPass } from 'three/examples/jsm/postprocessing/SSRPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import {
   SHAPES, DEG, MOVE, normPlat, localParts, worldParts, partsBounds, supportY, stepBody,
   shapeCount, shapeDef, setCustomShapes, isSimplePolygon, chainOk, normalizeShape,
@@ -439,11 +440,11 @@ for (const k of SKIN_KEYS) skinMats[k]=gloss(0xffffff,0.4,0.8,{flatShading:true}
 const darkMat=gloss(0x111111,0.4,0,{flatShading:true});
 const steelMat=gloss(0xdde3e8,0.18,1,{flatShading:true});
 
-// Материалы для превью персонажа (простые Phong)
+// Материалы для превью персонажа: те же PBR-параметры, что и в игре, но своё окружение (у превью отдельный рендерер)
 const pvMats={};
-for (const k of SKIN_KEYS) pvMats[k]=new THREE.MeshPhongMaterial({color:0xffffff,shininess:55,flatShading:true});
-const pvDarkMat=new THREE.MeshPhongMaterial({color:0x111111,shininess:10,flatShading:true});
-const pvSteelMat=new THREE.MeshPhongMaterial({color:0xdde3e8,shininess:110,flatShading:true});
+for (const k of SKIN_KEYS) pvMats[k]=new THREE.MeshStandardMaterial({color:0xffffff,roughness:0.4,metalness:0.8,flatShading:true});
+const pvDarkMat=new THREE.MeshStandardMaterial({color:0x111111,roughness:0.4,metalness:0,flatShading:true});
+const pvSteelMat=new THREE.MeshStandardMaterial({color:0xdde3e8,roughness:0.18,metalness:1,flatShading:true});
 
 // Строитель рыцаря: используется и для игрока, и для превью
 function buildKnight(parent, mats, dM, sM) {
@@ -490,7 +491,7 @@ function applySkin(sk) {
   skin=sk;
   for (const k of SKIN_KEYS) {
     skinMats[k].color.setHex(sk[k]).multiplyScalar(1-0.3*skinWet); setShine(skinMats[k],(sk.rough??0.55)*(1-0.7*skinWet),sk.metal??0.1); skinMats[k].envMapIntensity=1.2*(1+0.9*skinWet);
-    if (pvMats[k]) pvMats[k].color.setHex(sk[k]);
+    if (pvMats[k]) { pvMats[k].color.setHex(sk[k]); pvMats[k].roughness=sk.rough??0.55; pvMats[k].metalness=sk.metal??0.1; }
   }
 }
 const kn={phase:0,swing:0,air:0};
@@ -535,13 +536,29 @@ function initCharPreview() {
     container.appendChild(cvs);
     pvRenderer=new THREE.WebGLRenderer({canvas:cvs,antialias:false});
     pvRenderer.setPixelRatio(1); pvRenderer.setSize(180,240,false);
-    pvScene=new THREE.Scene(); pvScene.background=new THREE.Color(0x030810);
-    pvScene.add(new THREE.AmbientLight(0xffffff,0.5));
-    const pl1=new THREE.DirectionalLight(0xffffff,1.2); pl1.position.set(3,7,4); pvScene.add(pl1);
-    const pl2=new THREE.DirectionalLight(0x4466ff,0.4); pl2.position.set(-3,2,-4); pvScene.add(pl2);
-    const floor=new THREE.Mesh(new THREE.CircleGeometry(2,8).rotateX(-Math.PI/2),new THREE.MeshLambertMaterial({color:0x0a1228}));
-    floor.position.y=-0.01; pvScene.add(floor);
+    pvRenderer.shadowMap.enabled=true; pvRenderer.shadowMap.type=THREE.PCFSoftShadowMap;
+    pvScene=new THREE.Scene(); pvScene.background=new THREE.Color(0x0a1530);
+
+    // Студийное окружение: даёт металлу что отражать (в игре это делает небо)
+    const pm=new THREE.PMREMGenerator(pvRenderer);
+    pvScene.environment=pm.fromScene(new RoomEnvironment(),0.04).texture;
+    pm.dispose();
+
+    // Свет: мягкая подсветка сверху/снизу, тёплый основной, холодный контровой и заполняющий
+    pvScene.add(new THREE.HemisphereLight(0xcfe3ff,0x1a2238,0.6));
+    const key=new THREE.DirectionalLight(0xfff1dc,2.4); key.position.set(3,6,4.5);
+    key.castShadow=true; key.shadow.mapSize.set(512,512);
+    Object.assign(key.shadow.camera,{left:-2,right:2,top:2.5,bottom:-1,near:0.5,far:16});
+    key.shadow.bias=-0.0005; key.shadow.radius=3;
+    pvScene.add(key);
+    const rim=new THREE.DirectionalLight(0x6f8dff,2.0); rim.position.set(-4,3.5,-4); pvScene.add(rim);
+    const fill=new THREE.DirectionalLight(0xffc9a0,0.7); fill.position.set(-4,1.5,3); pvScene.add(fill);
+
+    const floor=new THREE.Mesh(new THREE.CircleGeometry(2,24).rotateX(-Math.PI/2),new THREE.MeshStandardMaterial({color:0x1a2646,roughness:0.85,metalness:0}));
+    floor.position.y=-0.01; floor.receiveShadow=true; pvScene.add(floor);
+
     pvPlayer=new THREE.Group(); buildKnight(pvPlayer,pvMats,pvDarkMat,pvSteelMat); pvScene.add(pvPlayer);
+    pvPlayer.traverse((o)=>{if(o.isMesh)o.castShadow=true;});
     pvCam=new THREE.PerspectiveCamera(38,180/240,0.1,50);
     for (const k of SKIN_KEYS) if(pvMats[k]) pvMats[k].color.setHex(skin[k]);
   } catch(e) { pvRenderer=null; if(container) container.innerHTML='<div class="pv-ph">Превью недоступно</div>'; }
