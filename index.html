@@ -190,6 +190,17 @@
       <div class="row">FPS: <select id="fpsSel"><option value="0">Максимум</option><option value="60">60 FPS</option><option value="30">30 FPS</option></select></div>
       <div class="row">Время суток: <select id="timeSel"></select></div>
       <div class="row">Погода: <select id="weatherSel"></select></div>
+      <div class="shead">Отражения SSR</div>
+      <div class="row">Отражения SSR: <select id="ssrSel"><option value="on">Вкл</option><option value="off">Выкл</option></select></div>
+      <div class="sndgrid">
+        <label for="ssr_op">Сила отражений<small>в дождь платформы отражают сильнее</small></label>
+        <input type="range" id="ssr_op" min="0" max="1" step="0.01"><span id="ssr_op_v"></span>
+        <label for="ssr_dist">Дальность<small>как далеко искать отражённое</small></label>
+        <input type="range" id="ssr_dist" min="5" max="80" step="1"><span id="ssr_dist_v"></span>
+      </div>
+      <div class="row">Сглаживание отражений: <select id="ssrBlurSel"><option value="on">Вкл</option><option value="off">Выкл</option></select></div>
+      <div class="row">Отражения на персонаже: <select id="ssrPlayerSel"><option value="on">Вкл</option><option value="off">Выкл</option></select></div>
+      <div id="ssrNote" style="font-size:11px;opacity:0.6;text-align:center;">Только в игре (в редакторе отключено). Если FPS просел, выключите SSR или сглаживание.</div>
       <div class="shead">Звук и музыка</div>
       <div class="row">Музыка: <select id="musicPreset"></select></div>
       <div class="sndgrid">
