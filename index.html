@@ -76,6 +76,21 @@
     #crosshair::after { left: 0; top: 12px; width: 26px; height: 2px; }
     body.pad.editing:not(.menu) #crosshair { display: block; }
 
+    /* Панель свойств редактора: у каждого поля постоянная подпись (placeholder пропадал, как только в поле появлялось число) */
+    #props { max-width: min(96vw, 780px); max-height: 44vh; overflow-y: auto; gap: 10px 22px; align-items: flex-start; }
+    .pgroup { display: flex; flex-direction: column; gap: 6px; }
+    .ptitle { font-size: 12px; color: #ffd700; letter-spacing: 1px; border-bottom: 1px solid #557; padding-bottom: 2px; }
+    .prow { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+    .fld { display: flex; flex-direction: column; gap: 2px; font-size: 11px; }
+    .fld .fl { color: #9ab; line-height: 1.2; max-width: 150px; }
+    .fld input[type=number], .fld input[type=text], .fld input:not([type]), .fld select { width: 150px; padding: 5px 8px; }
+    .fld.chk { flex-direction: row; align-items: center; gap: 6px; }
+    .fld.chk input { padding: 0; }
+    .fld.flash input { animation: fldflash 1.2s ease-out; }
+    .fld.flash .fl { color: #ffd700; font-weight: bold; }
+    @keyframes fldflash { 0% { background: #8a6a00; border-color: #ffd700; box-shadow: 0 0 10px #ffd700; } 100% { background: #223; border-color: #557; box-shadow: none; } }
+    #propNone { display: none; font-size: 11px; opacity: 0.7; max-width: 260px; }
+
     /* Счётчик FPS: справа под кнопкой меню, поверх меню тоже виден */
     #fps { position: absolute; top: 52px; right: 12px; display: none; z-index: 30; pointer-events: none; font-size: 13px; color: #7dff9a; text-shadow: 1px 1px #000; background: rgba(0,0,0,0.45); padding: 2px 8px; border-radius: 10px; }
   </style>
@@ -246,25 +261,46 @@
 
   <!-- Панель свойств -->
   <div id="props">
-    <input id="ename" placeholder="Название уровня">
-    <label><input type="checkbox" id="edreq"> Монеты обязательны</label>
-    <select id="edtheme"></select>
-    <input type="number" id="edw" placeholder="Ширина">
-    <input type="number" id="edd" placeholder="Глубина">
-    <input type="number" id="edrot" placeholder="Поворот">
-    <input type="number" id="edtilt" placeholder="Наклон">
-    <input type="number" id="edk" placeholder="Толщина">
-    <input type="number" id="edp1" placeholder="Объект: параметр 1">
-    <input type="number" id="edp2" placeholder="Объект: параметр 2">
-    <input type="number" id="edh" placeholder="Высота">
-    <select id="edstep"><option value="0.5">Шаг 0.5</option><option value="1">Шаг 1</option><option value="0.1">Шаг 0.1</option></select>
-    <label><input type="checkbox" id="edsnap" checked> Прилипание</label>
-    <button id="btnNew">Новый уровень</button>
-    <button id="camTop">Вид сверху</button>
-    <button id="camSide">Вид сбоку</button>
-    <button id="camFit">Вся карта</button>
-    <button class="link">Скопировать ссылку</button>
-    <button id="btnSubmit">В Мастерскую</button>
+    <div class="pgroup">
+      <div class="ptitle">Уровень</div>
+      <div class="prow">
+        <label class="fld"><span class="fl">Название уровня</span><input id="ename" placeholder="Название"></label>
+        <label class="fld"><span class="fl">Тема платформ</span><select id="edtheme"></select></label>
+        <label class="fld chk"><input type="checkbox" id="edreq"><span class="fl">Монеты обязательны</span></label>
+      </div>
+      <div class="prow">
+        <button id="btnNew">Новый уровень</button>
+        <button class="link">Скопировать ссылку</button>
+        <button id="btnSubmit">В Мастерскую</button>
+      </div>
+    </div>
+    <div class="pgroup">
+      <div class="ptitle" id="propTitle">Параметры</div>
+      <div class="prow">
+        <label class="fld"><span class="fl">Ширина</span><input type="number" id="edw" step="0.5"></label>
+        <label class="fld"><span class="fl">Глубина</span><input type="number" id="edd" step="0.5"></label>
+        <label class="fld"><span class="fl">Поворот</span><input type="number" id="edrot" step="5"></label>
+        <label class="fld"><span class="fl">Наклон</span><input type="number" id="edtilt" step="1"></label>
+        <label class="fld"><span class="fl">Толщина</span><input type="number" id="edk" step="0.25"></label>
+        <label class="fld"><span class="fl">Параметр 1</span><input type="number" id="edp1" step="0.5"></label>
+        <label class="fld"><span class="fl">Параметр 2</span><input type="number" id="edp2" step="0.5"></label>
+        <label class="fld"><span class="fl">Параметр 3</span><input type="number" id="edp3" step="5"></label>
+        <label class="fld"><span class="fl">Высота плоскости построения</span><input type="number" id="edh" step="0.5"></label>
+      </div>
+      <div id="propNone">У этого инструмента нет размеров: просто кликайте по сцене.</div>
+    </div>
+    <div class="pgroup">
+      <div class="ptitle">Сетка и камера</div>
+      <div class="prow">
+        <label class="fld"><span class="fl">Шаг сетки</span><select id="edstep"><option value="0.5">0.5 м</option><option value="1">1 м</option><option value="0.1">0.1 м</option></select></label>
+        <label class="fld chk"><input type="checkbox" id="edsnap" checked><span class="fl">Прилипание к платформам</span></label>
+      </div>
+      <div class="prow">
+        <button id="camTop">Вид сверху</button>
+        <button id="camSide">Вид сбоку</button>
+        <button id="camFit">Вся карта</button>
+      </div>
+    </div>
   </div>
 
   <script type="module" src="./src/main.js"></script>
