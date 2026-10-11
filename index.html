@@ -149,6 +149,7 @@
     <div class="title">N64 Parkour</div>
     <button id="mPlay" class="btn">▶ Играть</button>
     <button id="mLevels" class="btn">🎯 Уровни</button>
+    <button id="mLb" class="btn">🏆 Рекорды</button>
     <button id="mEdit" class="btn">✏ Редактор</button>
     <button id="mWork" class="btn">🌐 Мастерская</button>
     <button id="mChar" class="btn">👕 Персонаж</button>
@@ -259,6 +260,25 @@
       <b>Esc / M</b> — Меню
     </div>
     <div style="font-size:11px;opacity:0.6;">Подсказки переключаются сами: нажмите кнопку на геймпаде или клавишу / подвигайте мышью.</div>
+    <button class="back btn">Назад</button>
+  </div>
+
+  <!-- Таблица рекордов -->
+  <div id="scr-lb" class="screen">
+    <div class="title">Рекорды</div>
+    <div class="stabs" id="lbTabs">
+      <button class="tab on" data-cat="classic">Классика</button>
+      <button class="tab" data-cat="generated">Генерация</button>
+      <button class="tab" data-cat="custom">Кастомные</button>
+    </div>
+    <div class="row lb-bar">
+      <input id="lbNick" maxlength="16" placeholder="Ваш ник" style="width:150px;">
+      <select id="lbMap"></select>
+      <select id="lbSort"><option value="recent">Сначала свежие</option><option value="fast">Сначала быстрые</option></select>
+      <button id="lbRefresh" title="Обновить">⟳</button>
+    </div>
+    <div id="lbList" class="lb-list"></div>
+    <div class="snote">Нажмите на строку, чтобы сыграть этот заезд и побить рекорд.</div>
     <button class="back btn">Назад</button>
   </div>
 
