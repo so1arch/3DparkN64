@@ -21,6 +21,7 @@ import { input } from './input.js';
 import { createGulls } from './gulls.js';
 import { createGoalOrb } from './goalorb.js';
 import { createObjects, OBJ_ALLOWED, OBJ_MAX, OBJ_DEFS, OBJ_TOOL, OBJ_TOOL_LIST, objGhost, liftDir, demoLevel } from './objects.js';
+import { lb } from './leaderboard.js';
 
 const $ = (id) => document.getElementById(id);
 const ents = createObjects(); // интерактивные объекты: лестницы, батуты, ускорители, шипы, лифты
@@ -709,6 +710,7 @@ function reset() {
   setGoalOpen(!L.req||coins.length===0);
   levelId=lvId(L);
   trail.show(testRun?null:levelId); trail.begin(p); // нить прошлого прохождения и запись новой попытки
+  lb.startRun(L,testRun); // сервер запоминает момент старта: по нему считается время для таблицы рекордов
   msg.style.display='none';
   snapCam=true;
 }
@@ -749,7 +751,8 @@ function win(){
   if(testRun)extra='<br>Тест уровня: рекорд не сохраняется';
   else{const prev=save.best[levelId],rec=prev==null||time<prev;if(rec){save.best[levelId]=time;extra+='<br>Новый рекорд!';}else extra+=`<br>Рекорд: ${prev.toFixed(1)} с`;persist();if(trail.finish(levelId,rec))extra+='<br>Появилась нить ветра: след вашего рекордного пробега';}
   msg.style.display='flex';
-  msg.innerHTML=`ЗВЕЗДА!<br>Время: ${time.toFixed(1)} с${total?`, монет: ${got}/${total}`:''}${extra}<br><span class="hint-restart">${input.restartHint()}</span>`;
+  msg.innerHTML=`ЗВЕЗДА!<br>Время: ${time.toFixed(1)} с${total?`, монет: ${got}/${total}`:''}${extra}<br><span id="lbLine" class="lb-line"></span><br><span class="hint-restart">${input.restartHint()}</span>`;
+  lb.finishRun(L,{testRun}).then((r)=>{const el=document.getElementById("lbLine");if(r&&el&&r.run===lb.run)el.textContent=lb.resultText(r);});
 }
 
 function update(dt){
@@ -954,6 +957,7 @@ function showMenu(screen){
   if(menuOpen){for(const k in keys)keys[k]=false;jumpBuf=0;}
   if(screen==='main')$('mPlay').textContent=introDone?'▶ Продолжить':'▶ Играть';
   if(screen==='work')loadWork();
+  if(screen==='lb')lb.open();
   if(screen==='char')initCharPreview();
   // Музыка стартует при закрытии меню
   if(!screen)startMusic();
@@ -980,7 +984,7 @@ function setTab(t){
     else{player.visible=true;testRun=true;reset();}
   }
 }
-function play(lv){commitInf();lv.shapes=lv.shapes||[];lv.objs=cleanObjs(lv.objs);lv.theme=lv.theme|0;lv.req=!!lv.req;L=lv;buildLevel(L);hist.length=0;$('lvname').textContent=L.name;$('seed').value=L.seed??'';if(L.seed){$('seedStyle').value=L.style||'mix';$('seedDiff').value=L.diff||2;$('seedLen').value=L.len||'std';}syncLevelUI();const wasEdit=mode==='edit';setTab('play');testRun=false;if(!wasEdit)reset();}
+function play(lv){commitInf();lv.shapes=lv.shapes||[];lv.objs=cleanObjs(lv.objs);lv.theme=lv.theme|0;lv.req=!!lv.req;L=lv;buildLevel(L);hist.length=0;$('lvname').textContent=L.name;$('seed').value=L.seed??'';if(L.seed){$('seedStyle').value=L.style||'mix';$('seedDiff').value=L.diff||2;$('seedLen').value=L.len||'std';}syncLevelUI();const wasEdit=mode==='edit';setTab('play');testRun=false;reset();}
 async function copyLink(){const base=location.href.split('#')[0];const link=L.seed?`${base}#S=${encodeURIComponent(L.seed)}&T=${L.style||'mix'}&D=${L.diff||2}&N=${L.len||'std'}`:`${base}#L=${enc(L)}`;try{await navigator.clipboard.writeText(link);say('Ссылка скопирована');}catch{prompt('Скопируйте ссылку:',link);}}
 const ghRepo=()=>({owner:location.hostname.endsWith('github.io')?location.hostname.split('.')[0]:'OWNER',repo:location.pathname.split('/')[1]||'REPO'});
 async function loadWork(){const list=$('worklist'),{owner,repo}=ghRepo();list.textContent='Загрузка…';try{const res=await fetch(`https://api.github.com/repos/${owner}/${repo}/issues?labels=workshop&state=open&per_page=50`);if(!res.ok)throw new Error(res.status);const items=[];for(const it of await res.json()){if(it.pull_request)continue;const m=/```level\s+([\w-]+)\s+```/.exec(it.body||'');const lv=m&&dec(m[1]);if(lv)items.push({lv,author:it.user.login,likes:(it.reactions&&it.reactions['+1'])||0,url:it.html_url});}items.sort((a,b)=>b.likes-a.likes);list.textContent=items.length?'':'Пока пусто. Станьте первым!';for(const it of items){const row=document.createElement('div');row.className='item';const b=document.createElement('button');b.className='btn';b.textContent=`${it.lv.name} · ${it.author} · 👍${it.likes}`;b.onclick=()=>play(it.lv);const a=document.createElement('a');a.href=it.url;a.target='_blank';a.textContent='↗';row.append(b,a);list.append(row);}}catch{list.textContent='Не удалось загрузить Мастерскую (работает на GitHub Pages).';}}
@@ -992,6 +996,7 @@ $('mWork').onclick=()=>showMenu('work');
 $('mChar').onclick=()=>showMenu('char');
 $('mSet').onclick=()=>showMenu('settings');
 $('mCtl').onclick=()=>showMenu('controls');
+$('mLb').onclick=()=>showMenu('lb');
 document.querySelectorAll('.back').forEach((b)=>(b.onclick=()=>showMenu('main')));
 document.querySelectorAll('.openmenu').forEach((b)=>(b.onclick=toggleMenu));
 $('btnProps').onclick=()=>document.body.classList.toggle('noprops');
@@ -1002,6 +1007,13 @@ $('btnSeed').onclick=()=>play(genLevel($('seed').value.trim()||'default'));
 $('btnRand').onclick=()=>{const s=Math.random().toString(36).slice(2,8);$('seed').value=s;play(genLevel(s));};
 $('btnClassic').onclick=()=>play(classic());
 $('btnObjects').onclick=()=>play(demoLevel());
+// Таблица рекордов: клик по строке запускает ту же карту (классика / тот же Seed / тот же уровень по коду)
+lb.init({
+  enc, say, warn,
+  classic: (id) => play(id === 'objects' ? demoLevel() : classic()),
+  generated: (m) => play(generate(m.seed, m.style, m.diff, THEMES.length, m.len)),
+  custom: (code) => { const lv = dec(code); if (lv) play(lv); else warn('Не удалось загрузить карту'); },
+});
 $('btnCode').onclick=()=>{const lv=dec($('code').value.trim());lv?play(lv):warn('Код не подходит');};
 $('btnTest').onclick=()=>setTab('play');
 $('btnNew').onclick=()=>{pushHist();L={name:'Мой уровень',plats:[[0,0,0,6,6]],coins:[],shapes:[],objs:[],req:false,theme:0,goal:[0,1.6,-8],start:[0,0,0]};buildLevel(L);setGoalOpen(true);$('ename').value=L.name;$('lvname').textContent=L.name;syncLevelUI();hist.length=0;ed.tx=0;ed.tz=0;ed.h=0;syncUI();fitView();};
