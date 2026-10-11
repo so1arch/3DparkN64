@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js';
+import { SSRPass } from 'three/examples/jsm/postprocessing/SSRPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import {
   SHAPES, DEG, MOVE, normPlat, localParts, worldParts, partsBounds, supportY, stepBody,
@@ -25,12 +26,23 @@ const ents = createObjects(); // интерактивные объекты: ле
 
 // ── Настройки графики: HIGH + безлимитный FPS по умолчанию ─────
 let QUALITY = 'high', FPS_CAP = 0, TIME = 'day', WEATHER = 'clear';
+// Отражения SSR (только при графике HIGH): on — включены, op — сила 0..1, dist — дальность поиска отражения в метрах,
+// blur — сглаживание, player — отражения на персонаже. Меняются в Настройки → «Отражения SSR».
+const SSR = { on: true, op: 0.6, dist: 30, blur: true, player: true };
 try {
   const q = JSON.parse(localStorage.getItem('n64parkour.v1') || '{}');
   if (q.quality === 'light') QUALITY = 'light';
   if ([0, 30, 60].includes(q.fps)) FPS_CAP = q.fps;
   if (q.time === 'night') TIME = 'night';
   if (q.weather === 'rain') WEATHER = 'rain';
+  const s = q.ssr;
+  if (s && typeof s === 'object') {
+    if (typeof s.on === 'boolean') SSR.on = s.on;
+    if (Number.isFinite(s.op)) SSR.op = Math.max(0, Math.min(1, s.op));
+    if (Number.isFinite(s.dist)) SSR.dist = Math.max(5, Math.min(80, s.dist));
+    if (typeof s.blur === 'boolean') SSR.blur = s.blur;
+    if (typeof s.player === 'boolean') SSR.player = s.player;
+  }
 } catch { /* defaults */ }
 const HIGH = QUALITY === 'high';
 
@@ -77,10 +89,29 @@ const sun = new THREE.DirectionalLight(0xffffff, 1.3);
 sun.position.set(5, 10, 6);
 scene.add(sun);
 
-let composer = null, ssao = null;
+let composer = null, ssao = null, ssr = null, renderPass = null;
+let ssrGloss = 1; // насколько блестят платформы темы уровня: у «Вулкана» отражения слабее, у «Золота» ярче
+const themeGloss = (th) => Math.min(1.1, 0.45 + 0.9 * (1 - th.rough) * (0.5 + 0.5 * th.metal));
 if (HIGH) {
   composer = new EffectComposer(renderer);
-  composer.addPass(new RenderPass(scene, camera));
+  renderPass = new RenderPass(scene, camera);
+  composer.addPass(renderPass);
+  // SSR: отражения в экранном пространстве. Проход сам рисует сцену (цвет, нормали, «металличность»), поэтому пока он
+  // включён, обычный RenderPass отключается (см. loop). Стоит перед SSAO: тот берёт его картинку и добавляет затенение.
+  // Отражают только помеченные меши (userData.ssr): платформы и персонаж. Остальное (небо, облака, монеты) отражений не даёт.
+  const ssrSel = []; ssrSel.includes = (o) => o.userData.ssr === true;
+  ssr = new SSRPass({ renderer, scene, camera, width: 320, height: RES_H, selects: ssrSel });
+  ssr.enabled = false;
+  ssr.beautyRenderTarget.depthTexture.type = THREE.UnsignedIntType; // по умолчанию глубина 16 бит: на расстоянии даёт ступеньки
+  ssr.metalnessOnMaterial.fog = ssr.metalnessOffMaterial.fog = false; // иначе туман подкрашивает маску, и далёкие облака «отражают»
+  const patch = (m, from, to) => {
+    if (m.fragmentShader.includes(from)) m.fragmentShader = m.fragmentShader.replace(from, to);
+    else console.warn('SSR: шейдер three.js отличается от ожидаемого, правка пропущена:', from);
+  };
+  patch(ssr.ssrMaterial, 'void main(){', 'void main(){\n\t\t\tgl_FragColor = vec4(0.0);'); // там, где луч ничего не нашёл, должна быть прозрачность
+  patch(ssr.blurMaterial, 'coeSide)/a;', 'coeSide)/max(a,0.0001);');    // без деления на ноль в пустых местах
+  patch(ssr.blurMaterial2, 'coeSide)/a;', 'coeSide)/max(a,0.0001);');
+  composer.addPass(ssr);
   ssao = new SSAOPass(scene, camera, 320, RES_H);
   ssao.kernelRadius = 2.5;
   composer.addPass(ssao);
@@ -100,12 +131,17 @@ let outlines = [];
 const helpers = new THREE.Group(); helpers.visible = false; scene.add(helpers);
 const marker = new THREE.Mesh(new THREE.ConeGeometry(0.4, 1.2, 6), new THREE.MeshBasicMaterial({ color: 0xff2222 }));
 marker.visible = false; scene.add(marker);
-if (ssao) {
-  const ssaoRender = ssao.render.bind(ssao);
-  ssao.render = (...args) => {
-    const hide = [helpers, marker, dust, ...rain.objects, ...gulls.objects, ...trail.objects, ...goalOrb.objects, ...outlines], was = hide.map((o) => o.visible);
-    hide.forEach((o) => (o.visible = false)); ssaoRender(...args); hide.forEach((o, i) => (o.visible = was[i]));
-  };
+// Полупрозрачные штуки (дождь, нить, спрайты, подсказки редактора) ломают карты глубины и нормалей,
+// поэтому на время этих проходов (SSAO, а также нормали и маска SSR) они прячутся. Обычный кадр их рисует.
+const withFxHidden = (fn) => (...args) => {
+  const hide = [helpers, marker, dust, ...rain.objects, ...gulls.objects, ...trail.objects, ...goalOrb.objects, ...outlines], was = hide.map((o) => o.visible);
+  hide.forEach((o) => (o.visible = false));
+  try { return fn(...args); } finally { hide.forEach((o, i) => (o.visible = was[i])); }
+};
+if (ssao) ssao.render = withFxHidden(ssao.render.bind(ssao));
+if (ssr) {
+  ssr.renderOverride = withFxHidden(ssr.renderOverride.bind(ssr));
+  ssr.renderMetalness = withFxHidden(ssr.renderMetalness.bind(ssr));
 }
 
 function resize() {
@@ -245,7 +281,7 @@ function setShine(m, rough, metal) {
 const SAVE_KEY = 'n64parkour.v1';
 const AUDIO_VER = 2; // 2: громкость эффектов по умолчанию снижена с 80 % до 50 %
 const MUSIC_AUTO = 11, MUSIC_VER = 2; // 11 — «Авто (по времени и погоде)»; версия 2: Авто стало мелодией по умолчанию
-let save = { best:{}, skin:null, quality:QUALITY, fps:FPS_CAP, musicPreset:MUSIC_AUTO, musicVer:MUSIC_VER, audio:null, audioVer:AUDIO_VER, time:TIME, weather:WEATHER };
+let save = { best:{}, skin:null, quality:QUALITY, fps:FPS_CAP, musicPreset:MUSIC_AUTO, musicVer:MUSIC_VER, audio:null, audioVer:AUDIO_VER, time:TIME, weather:WEATHER, ssr:SSR };
 let musicPreset = MUSIC_AUTO;
 try {
   const s = JSON.parse(localStorage.getItem(SAVE_KEY) || '{}');
@@ -348,7 +384,7 @@ function addPlat(a,i,th){
   const pl=normPlat(a);
   const geo=platGeometry(localParts(pl),Math.tan(pl.t*DEG));
   const m=new THREE.Mesh(geo,platMat(th.colors[i%th.colors.length],th)); applyWet(m.material);
-  m.position.set(pl.x,pl.y,pl.z); m.rotation.y=pl.r*DEG; m.userData={k:'p',i,own:true,ownMat:true};
+  m.position.set(pl.x,pl.y,pl.z); m.rotation.y=pl.r*DEG; m.userData={k:'p',i,own:true,ownMat:true,ssr:true};
   const ol=new THREE.LineSegments(new THREE.EdgesGeometry(geo,25),outlineMat);
   ol.userData={k:'o',own:true}; ol.visible=mode==='edit'; m.add(ol); outlines.push(ol);
   const wp=worldParts(pl); m.userData.parts=wp;
@@ -364,6 +400,7 @@ function buildLevel(lv) {
   parts=[]; platMeshes=[]; coins=[]; outlines=[]; hoverObj=null;
   setCustomShapes(lv.shapes||[]);
   const th=THEMES[lv.theme|0]||THEMES[0];
+  ssrGloss=themeGloss(th);
   lv.plats.forEach((a,i)=>addPlat(a,i,th));
   lv.coins.forEach((c,i)=>addCoin(c,i,0));
   ents.build(lv.objs||[],levelGroup); parts.push(...ents.parts); // части лифтов тоже участвуют в физике
@@ -442,6 +479,9 @@ function buildKnight(parent, mats, dM, sM) {
 const player=new THREE.Group();
 const {legL,legR,armL,armR}=buildKnight(player,skinMats,darkMat,steelMat);
 scene.add(player);
+// Персонаж отражает окружение в SSR (если не выключено в настройках)
+function markPlayerSSR(){player.traverse((o)=>{if(o.isMesh)o.userData.ssr=SSR.player;});}
+markPlayerSSR();
 
 let skin=SKINS[0], skinId=0;
 let skinWet=0; // 0..1: насколько мокрый персонаж (темнее, глянцевее, сильнее отражает небо)
@@ -911,6 +951,25 @@ for(const k of SND_KEYS){
 }
 $('btnSndTest').onclick=()=>audio.demo();
 
+// Отражения SSR: вкл/выкл, сила, дальность, сглаживание, отражения на персонаже (Настройки → «Отражения SSR»).
+// При графике LIGHT SSR нет вовсе, поэтому элементы выключены. Значения лежат в SSR и сохраняются вместе с остальными настройками.
+{
+  const yn=(b)=>b?'on':'off';
+  $('ssrSel').value=yn(SSR.on); $('ssrBlurSel').value=yn(SSR.blur); $('ssrPlayerSel').value=yn(SSR.player);
+  $('ssr_op').value=String(SSR.op); $('ssr_dist').value=String(SSR.dist);
+  const show=()=>{$('ssr_op_v').textContent=Math.round(SSR.op*100)+'%';$('ssr_dist_v').textContent=Math.round(SSR.dist)+' м';};
+  show();
+  $('ssrSel').onchange=(e)=>{SSR.on=e.target.value==='on';persist();e.target.blur();};
+  $('ssr_op').oninput=(e)=>{SSR.op=+e.target.value;show();persist();};
+  $('ssr_dist').oninput=(e)=>{SSR.dist=+e.target.value;show();persist();};
+  $('ssrBlurSel').onchange=(e)=>{SSR.blur=e.target.value==='on';persist();e.target.blur();};
+  $('ssrPlayerSel').onchange=(e)=>{SSR.player=e.target.value==='on';markPlayerSSR();persist();e.target.blur();};
+  if(!ssr){
+    for(const id of['ssrSel','ssr_op','ssr_dist','ssrBlurSel','ssrPlayerSel'])$(id).disabled=true;
+    $('ssrNote').textContent='Недоступно при графике LIGHT: выберите HIGH в списке «Графика» выше (страница перезагрузится)';
+  }
+}
+
 const num=(id,lo,hi,fn)=>{$(id).oninput=(e)=>{const x=parseFloat(e.target.value);if(Number.isFinite(x)){fn(Math.max(lo,Math.min(hi,x)));ed.dirty=true;}};};
 num('edw',1,30,(x)=>(ed.w=x));num('edd',1,30,(x)=>(ed.d=x));num('edrot',-720,720,(x)=>(ed.rot=x));
 num('edtilt',-60,60,(x)=>(ed.tilt=x));num('edk',0.25,20,(x)=>(ed.k=x));num('edh',-300,300,(x)=>(ed.h=x));num('edp1',-40,40,(x)=>(ed.p1=x));num('edp2',-40,40,(x)=>(ed.p2=x));
@@ -1041,6 +1100,19 @@ function setEnv(time, weather) {
   music.setEnv(night, rainy);
 }
 
+// ── Отражения SSR: параметры на каждый кадр ───────────────────
+// Сила = ползунок × блеск темы уровня × (0.8 + 0.9 × мокрота): в дождь мокрые платформы отражают заметно сильнее.
+// Матрицы камеры SSRPass копирует только при создании и смене размера, а у нас меняются дальность и пропорции, поэтому обновляем сами.
+function updateSSR(){
+  const u=ssr.ssrMaterial.uniforms;
+  u.cameraNear.value=camera.near; u.cameraFar.value=camera.far;
+  u.cameraProjectionMatrix.value.copy(camera.projectionMatrix);
+  u.cameraInverseProjectionMatrix.value.copy(camera.projectionMatrixInverse);
+  ssr.opacity=Math.min(1,SSR.op*ssrGloss*(0.8+0.9*env.wet));
+  ssr.maxDistance=SSR.dist;
+  ssr.blur=SSR.blur;
+}
+
 // ── Главный цикл ──────────────────────────────────────────────
 const clock=new THREE.Clock();
 let frameAcc=0;
@@ -1063,7 +1135,13 @@ function loop(){
   audio.update(dt,{level:menuOpen?0.45:(mode==='edit'?0.7:1),height:mode==='play'?p.y:camera.position.y,speed:live?Math.hypot(v.x,v.z):0,fall:live?Math.max(0,-v.y):0,rain:env.ws,night:env.ns});
   clouds.update(dt,clockT,camera.position);
   trail.update(menuOpen?0:dt,clockT,mode==='play',p,1-env.ns); // нить: днём ярче, ночью прежняя
-  if(composer)composer.render();else renderer.render(scene,camera);
+  if(composer){
+    // SSR работает только в игре: в редакторе нужна чистая картинка, а лишние проходы там ни к чему
+    const useSSR=!!ssr&&SSR.on&&mode==='play';
+    renderPass.enabled=!useSSR; ssr.enabled=useSSR;
+    if(useSSR)updateSSR();
+    composer.render();
+  }else renderer.render(scene,camera);
 }
 
 // Время суток и погода
