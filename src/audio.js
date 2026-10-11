@@ -97,6 +97,11 @@ export const SFX = {
   fall: { dur: 0.6, gain: 0.5, bus: 'sfx', make: () => { const a = sqW(0.5), b = triW(); return (t, u) => (a(720 * Math.pow(0.12, u)) * 0.5 + b(360 * Math.pow(0.12, u)) * 0.6) * Math.pow(1 - u, 0.6); } },
   restart: { dur: 0.26, gain: 0.45, bus: 'sfx', make: () => notesFn([[523, 0, 0.07], [784, 0.07, 0.14]], { duty: 0.25, decay: 10 }) },
   locked: { dur: 0.32, gain: 0.5, bus: 'sfx', make: () => notesFn([[196, 0, 0.11], [147, 0.12, 0.18]], { duty: 0.5, decay: 5, tri: 0.3 }) },
+  // --- объекты ---
+  rung: { dur: 0.06, gain: 0.35, bus: 'sfx', cool: 0.05, variants: 2, make: (i) => notesFn([[330 + i * 60, 0, 0.05]], { duty: 0.5, decay: 45, tri: 0.6 }) },
+  spring: { dur: 0.32, gain: 0.5, bus: 'sfx', make: () => { const a = sqW(0.25), b = triW(); return (t, u) => (a(180 + 1100 * Math.pow(u, 0.5)) * 0.5 + b(90 + 550 * Math.pow(u, 0.5)) * 0.6) * Math.pow(1 - u, 1.1); } },
+  boost: { dur: 0.45, gain: 0.45, bus: 'sfx', make: () => notesFn([[523, 0, 0.07], [784, 0.07, 0.07], [1047, 0.14, 0.09], [1568, 0.23, 0.2]], { duty: 0.25, decay: 8, tri: 0.15 }) },
+  zap: { dur: 0.35, gain: 0.55, bus: 'sfx', make: () => { const n = noiseW(7, 2), a = sqW(0.5); return (t, u) => (n() * 0.5 + a(700 * Math.pow(0.12, u)) * 0.5) * Math.pow(1 - u, 0.8); } },
   // --- меню ---
   ui: { dur: 0.055, gain: 0.35, bus: 'ui', cool: 0.03, make: () => notesFn([[880, 0, 0.05]], { duty: 0.25, decay: 30 }) },
   back: { dur: 0.1, gain: 0.35, bus: 'ui', cool: 0.03, make: () => notesFn([[660, 0, 0.035], [440, 0.04, 0.05]], { duty: 0.25, decay: 25 }) },
