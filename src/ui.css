@@ -1,0 +1,146 @@
+/* src/ui.css — пиксель-арт тема интерфейса «картридж».
+   Подключается из src/ui.js и перекрывает стили из index.html (грузится позже).
+   Палитра: индиго (фон) · лавандовая рамка · золото (главное) · лёд (подсказки) · мята (успех) · коралл (опасно). */
+
+:root {
+  --ink: #0f0d2e;  --pan: #1d1a52;  --pan2: #2b2775;  --bd: #7a72ee;  --edge-c: #06051a;
+  --tx: #f4efe2;   --dim: #a8a3d8;
+  --gold: #ffcf33; --gold-d: #c4721a; --ice: #6fe3ff; --mint: #5ff0a5; --red: #ff5a5f;
+  --fh: 'Press Start 2P', 'Courier New', monospace;   /* заголовки, кнопки, цифры */
+  --fb: 'Pixelify Sans', 'Courier New', monospace;    /* текст и подписи */
+  /* «ступенчатая» рамка с срезанными углами — основа всех панелей и кнопок */
+  --edge: 0 -3px 0 0 var(--edge-c), 0 3px 0 0 var(--edge-c), -3px 0 0 0 var(--edge-c), 3px 0 0 0 var(--edge-c);
+}
+body { font-family: var(--fb); font-size: 14px; -webkit-font-smoothing: none; }
+:focus-visible { outline: 3px solid var(--ice); outline-offset: 2px; }
+
+/* лёгкие линии ЭЛТ и виньетка поверх всего */
+body::after { content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 60;
+  background: repeating-linear-gradient(0deg, rgba(0,0,0,.09) 0 1px, transparent 1px 3px);
+  box-shadow: inset 0 0 110px rgba(0,0,0,.32); }
+
+/* ── Кнопки: отклик на наведение, нажатие и клик ─────────────── */
+button { font-family: var(--fh); font-size: 10px; line-height: 1.4; color: var(--tx); background: var(--pan2);
+  border: 0; border-radius: 0; padding: 10px 14px; margin: 3px; position: relative;
+  box-shadow: var(--edge), inset 0 -4px 0 rgba(0,0,0,.4), inset 0 4px 0 rgba(255,255,255,.14); }
+button:hover, body .padfocus { background: var(--bd) !important; color: #fff; outline: none !important; }
+button:active { transform: translateY(3px); box-shadow: var(--edge), inset 0 4px 0 rgba(0,0,0,.45); }
+button:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+button.on { background: var(--gold); color: var(--ink); }
+button.hit { animation: hit .16s steps(2); }
+@keyframes hit { 0% { background: #fff; color: var(--ink); transform: scale(.95); } }
+/* пиксельный курсор-стрелка у выбранной кнопки меню (мышь и геймпад) */
+.btn:hover::before, .btn.padfocus::before { content: ''; position: absolute; left: 12px; top: 50%; margin-top: -6px;
+  border: 6px solid transparent; border-left: 8px solid var(--gold); border-right: 0; animation: blink .6s steps(1) infinite; }
+@keyframes blink { 50% { opacity: .3; } }
+
+select, input:not([type=range]):not([type=checkbox]):not([type=color]) { font-family: var(--fb); font-size: 14px; color: var(--tx);
+  background: var(--ink); border: 0; border-radius: 0; margin: 3px; padding: 6px 8px; box-shadow: var(--edge), inset 0 3px 0 rgba(0,0,0,.5); }
+select { appearance: none; -webkit-appearance: none; padding-right: 26px; background-repeat: no-repeat; background-position: right 8px center; background-size: 10px 6px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 5 3' shape-rendering='crispEdges'%3E%3Cpath fill='%23ffcf33' d='M0 0h5v1h-5z M1 1h3v1h-3z M2 2h1v1h-1z'/%3E%3C/svg%3E"); }
+select:hover { background-color: var(--pan); }
+input[type=checkbox] { appearance: none; -webkit-appearance: none; width: 18px; height: 18px; margin: 3px; background: var(--ink); box-shadow: var(--edge); }
+input[type=checkbox]:checked { background: var(--gold); box-shadow: var(--edge), inset 0 0 0 5px var(--ink); }
+input[type=color] { width: 40px; height: 28px; margin: 3px; padding: 0; border: 0; background: var(--ink); box-shadow: var(--edge); }
+/* ползунок-«громкость»: сегментированная полоса, золотая заливка до бегунка (--v ставит ui.js) */
+input[type=range] { -webkit-appearance: none; appearance: none; height: 24px; margin: 0; }
+input[type=range]::-webkit-slider-runnable-track { height: 12px; box-shadow: var(--edge);
+  background: repeating-linear-gradient(90deg, transparent 0 6px, var(--pan) 6px 8px), linear-gradient(90deg, var(--gold) var(--v, 0%), var(--ink) var(--v, 0%)); }
+input[type=range]::-moz-range-track { height: 12px; box-shadow: var(--edge);
+  background: repeating-linear-gradient(90deg, transparent 0 6px, var(--pan) 6px 8px), linear-gradient(90deg, var(--gold) var(--v, 0%), var(--ink) var(--v, 0%)); }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 22px; margin-top: -5px; background: #fff; border: 3px solid var(--edge-c); border-radius: 0; }
+input[type=range]::-moz-range-thumb { width: 8px; height: 16px; background: #fff; border: 3px solid var(--edge-c); border-radius: 0; }
+input[type=range]:hover::-webkit-slider-thumb { background: var(--ice); }
+
+/* ── Экраны меню ─────────────────────────────────────────────── */
+.screen { background: radial-gradient(ellipse at 50% 30%, rgba(43,39,117,.97), rgba(10,8,34,.98) 78%); gap: 10px; }
+.screen.on { animation: scr .24s steps(4); }
+@keyframes scr { from { opacity: 0; transform: translateY(14px); } }
+.title { font-family: var(--fh); font-size: clamp(16px, 4.5vw, 26px); color: var(--gold); letter-spacing: 2px; text-align: center; margin-bottom: 14px;
+  text-shadow: 0 3px 0 var(--gold-d), 0 6px 0 #000, 3px 3px 0 #000; }
+#scr-main .title { font-size: clamp(22px, 6vw, 40px); animation: bob 1.2s steps(2) infinite; }
+@keyframes bob { 50% { transform: translateY(-4px); } }
+.screen > .btn, #worklist .btn { width: min(84vw, 300px); text-align: left; padding-left: 34px; }
+.screen > .btn.back { text-align: center; padding-left: 14px; margin-top: 8px; }
+#mPlay { background: var(--gold); color: var(--ink); }          /* главное действие выделено цветом */
+#mPlay:hover, #mPlay.padfocus { background: #fff !important; color: var(--ink); }
+.screen .row { font-family: var(--fb); font-size: 14px; }
+#ctlList { background: var(--pan); box-shadow: var(--edge); padding: 14px 18px !important; width: min(94vw, 560px); font-family: var(--fb); font-size: 15px !important; line-height: 1.9 !important; }
+#ctlList b { font-family: var(--fh); font-size: 10px; font-weight: normal; color: var(--gold); }
+#ctlDevice { font-family: var(--fh); font-size: 9px !important; color: var(--ice) !important; }
+#charPreview { width: 180px; height: 240px; margin: 4px; box-shadow: var(--edge); }
+#charPreview canvas { width: 180px !important; height: 240px !important; }
+
+/* ── Настройки: вкладки → страницы → строки ──────────────────── */
+.stabs { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; width: min(94vw, 560px); }
+.tab { font-size: 9px; padding: 9px 10px; }
+.sscroll { width: min(94vw, 560px); max-height: 56vh; align-items: stretch; gap: 0; padding: 16px; background: var(--pan); box-shadow: var(--edge); }
+.shead { display: none; }
+.spage { display: none; flex-direction: column; gap: 12px; width: 100%; }
+.spage.on { display: flex; animation: scr .18s steps(3); }
+.spage .row { width: 100%; max-width: none; flex-wrap: nowrap; justify-content: space-between; }
+.spage .btn { width: 100%; text-align: center; padding-left: 14px; }
+.sndgrid { font-family: var(--fb); font-size: 14px; }
+.sndgrid span { font-family: var(--fh); font-size: 9px; color: var(--gold); }
+.sndgrid small, #ssrNote, .snote { font-family: var(--fb); font-size: 12px !important; color: var(--dim); opacity: 1 !important; }
+#btnReset { background: #7a1f2b !important; }
+#btnReset:hover { background: var(--red) !important; }
+
+/* ── Игровой экран: зоны ─────────────────────────────────────────
+   левый верх — прогресс (уровень, монеты, время, рекорд)   · правый верх — меню и FPS
+   верх по центру — статус    · низ по центру — всплывающие подсказки    · правый низ — управление
+   центр свободен: там только прицел редактора и окно победы */
+#hud { top: 12px; left: 12px; flex-direction: column; align-items: flex-start; gap: 8px; font-family: var(--fh); text-shadow: none; }
+#lvname { font-family: var(--fh); font-size: 9px; color: var(--gold) !important; font-weight: normal !important; background: var(--ink); padding: 6px 9px; margin: 3px;
+  box-shadow: var(--edge); max-width: 52vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#lvname:empty { display: none; }
+.hud-row { display: flex; gap: 8px; margin: 0 3px; }
+.chip { display: flex; align-items: center; gap: 7px; padding: 7px 10px; background: rgba(15,13,46,.9); box-shadow: var(--edge); font-size: 12px; }
+.chip:has(#hCoins:empty) .ic.coin { display: none; }
+.hud-c { color: var(--gold); }
+#hNeed { font-size: 8px; animation: blink 1s steps(1) infinite; }
+.hud-t { font-size: 16px; color: var(--tx); }
+.hud-t small { font-size: 9px; color: var(--dim); }
+.hud-b { font-size: 10px; color: var(--dim); }
+.chip.pulse { animation: pulse .3s steps(3); }
+@keyframes pulse { 40% { transform: scale(1.18); background: var(--gold-d); } }
+.ic { display: inline-block; width: 16px; height: 16px; background-size: 100% 100%; image-rendering: pixelated; flex: none; }
+.ic.coin { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8' shape-rendering='crispEdges'%3E%3Cpath fill='%23ffcf33' d='M2 0h4v1h1v6h-1v1h-4v-1h-1v-6h1z'/%3E%3Cpath fill='%23c4721a' d='M3 2h2v4h-2z'/%3E%3Cpath fill='%23fff3a0' d='M2 1h1v1h-1z'/%3E%3C/svg%3E"); }
+.ic.clock { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8' shape-rendering='crispEdges'%3E%3Cpath fill='%236fe3ff' d='M2 0h4v1h1v1h1v4h-1v1h-1v1h-4v-1h-1v-1h-1v-4h1v-1h1z'/%3E%3Cpath fill='%230f0d2e' d='M3 2h1v2h2v1h-3z'/%3E%3C/svg%3E"); }
+.ic.star { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8' shape-rendering='crispEdges'%3E%3Cpath fill='%23ffcf33' d='M3 0h2v2h-2z M0 2h8v1h-8z M1 3h6v1h-6z M2 4h4v2h-4z M1 6h2v1h-2z M5 6h2v1h-2z M1 7h1v1h-1z M6 7h1v1h-1z'/%3E%3C/svg%3E"); }
+
+#playmenu { top: 12px; right: 12px; font-size: 9px; padding: 9px 11px; }
+#fps { top: 58px; right: 15px; font-family: var(--fh); font-size: 9px; color: var(--mint); background: var(--ink); border-radius: 0; box-shadow: var(--edge); }
+#status { top: 14px; font-family: var(--fh); font-size: 9px; line-height: 1.6; color: var(--gold); background: var(--ink); padding: 8px 12px; box-shadow: var(--edge); max-width: 60vw; text-shadow: none; }
+#status:empty { display: none; }
+#help { right: 14px; bottom: 14px; font-family: var(--fb); font-size: 12px; line-height: 1.5; opacity: .7; padding: 6px 10px; background: rgba(15,13,46,.7); box-shadow: var(--edge); text-shadow: none; }
+#help:empty { display: none; }
+#toast { bottom: 28px; border-radius: 0; font-family: var(--fh); font-size: 9px; line-height: 1.6; padding: 10px 14px; background: var(--ink); box-shadow: var(--edge); transform: translate(-50%, 10px);
+  transition: opacity .2s steps(3), transform .2s steps(3); }
+#toast.show { transform: translate(-50%, 0); }
+#padhint { font-family: var(--fb); font-size: 13px; color: var(--ice); background: var(--ink); border-radius: 0; box-shadow: var(--edge); }
+
+/* окно победы: рамка по центру, затемнение вокруг, первая строка — крупно */
+#msg { inset: auto; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(88vw, 440px); padding: 24px 20px; background: var(--pan);
+  box-shadow: var(--edge), 0 0 0 100vmax rgba(8,6,26,.62); font-family: var(--fh); font-size: 10px; line-height: 2.2; text-align: center; color: var(--tx); }
+#msg[style*="flex"] { display: block !important; animation: winpop .4s steps(5); }
+#msg::first-line { color: var(--gold); font-size: 22px; }
+@keyframes winpop { from { transform: translate(-50%, -50%) scale(.6); opacity: 0; } }
+.hint-restart { display: block; margin-top: 10px; font-size: 9px; color: var(--ice); animation: blink 1s steps(1) infinite; }
+
+/* ── Редактор ────────────────────────────────────────────────── */
+.slot { width: 62px; padding: 8px 2px 5px; gap: 0; }
+.slot .n { position: absolute; top: 3px; left: 5px; font-family: var(--fh); font-size: 6px; color: var(--dim); }
+.slot.on .n { color: var(--ink); }
+.slot .nm { font-family: var(--fb); font-size: 11px; line-height: 1.1; }
+#shapes button { width: 34px; height: 34px; margin: 2px; font-size: 14px; text-align: center; }
+#props, #drawbox { border-radius: 0; background: var(--pan); box-shadow: var(--edge); font-family: var(--fb); }
+#edinfo { font-family: var(--fb); font-size: 13px; background: rgba(15,13,46,.8); padding: 6px 10px; box-shadow: var(--edge); text-shadow: none; }
+.ptitle { font-family: var(--fh); font-size: 9px; color: var(--gold); border-bottom: 3px solid var(--edge-c); padding-bottom: 6px; }
+.fld { font-size: 12px; } .fld .fl { color: var(--dim); }
+.fld.flash .fl { color: var(--gold); font-weight: normal; }
+@keyframes fldflash { 0% { background: var(--gold-d); } }
+#propNone { color: var(--dim); }
+
+@media (max-width: 700px) { #status { top: 78px; } #help { display: none; } .hud-row { flex-wrap: wrap; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
