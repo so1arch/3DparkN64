@@ -25,7 +25,7 @@ const $ = (id) => document.getElementById(id);
 const ents = createObjects(); // интерактивные объекты: лестницы, батуты, ускорители, шипы, лифты
 
 // ── Настройки графики: HIGH + безлимитный FPS по умолчанию ─────
-let QUALITY = 'high', FPS_CAP = 0, TIME = 'day', WEATHER = 'clear';
+let QUALITY = 'high', FPS_CAP = 0, TIME = 'day', WEATHER = 'clear', SHOW_FPS = false;
 // Отражения SSR (только при графике HIGH): on — включены, op — сила 0..1, dist — дальность поиска отражения в метрах,
 // blur — сглаживание, player — отражения на персонаже. Меняются в Настройки → «Отражения SSR».
 const SSR = { on: true, op: 0.6, dist: 30, blur: true, player: true };
@@ -33,6 +33,7 @@ try {
   const q = JSON.parse(localStorage.getItem('n64parkour.v1') || '{}');
   if (q.quality === 'light') QUALITY = 'light';
   if ([0, 30, 60].includes(q.fps)) FPS_CAP = q.fps;
+  if (q.showFps === true) SHOW_FPS = true;
   if (q.time === 'night') TIME = 'night';
   if (q.weather === 'rain') WEATHER = 'rain';
   const s = q.ssr;
@@ -281,7 +282,7 @@ function setShine(m, rough, metal) {
 const SAVE_KEY = 'n64parkour.v1';
 const AUDIO_VER = 2; // 2: громкость эффектов по умолчанию снижена с 80 % до 50 %
 const MUSIC_AUTO = 11, MUSIC_VER = 2; // 11 — «Авто (по времени и погоде)»; версия 2: Авто стало мелодией по умолчанию
-let save = { best:{}, skin:null, quality:QUALITY, fps:FPS_CAP, musicPreset:MUSIC_AUTO, musicVer:MUSIC_VER, audio:null, audioVer:AUDIO_VER, time:TIME, weather:WEATHER, ssr:SSR };
+let save = { best:{}, skin:null, quality:QUALITY, fps:FPS_CAP, showFps:SHOW_FPS, musicPreset:MUSIC_AUTO, musicVer:MUSIC_VER, audio:null, audioVer:AUDIO_VER, time:TIME, weather:WEATHER, ssr:SSR };
 let musicPreset = MUSIC_AUTO;
 try {
   const s = JSON.parse(localStorage.getItem(SAVE_KEY) || '{}');
@@ -1113,6 +1114,15 @@ function updateSSR(){
   ssr.blur=SSR.blur;
 }
 
+// ── Счётчик FPS ───────────────────────────────────────────────
+// Считается по реально отрисованным кадрам (после ограничителя FPS) и обновляется дважды в секунду.
+const fpsEl=$('fps');
+let fpsN=0,fpsT=0;
+function applyFpsShow(){fpsEl.style.display=SHOW_FPS?'block':'none';fpsEl.textContent='';fpsN=0;fpsT=0;}
+$('fpsShowSel').value=SHOW_FPS?'1':'0';
+$('fpsShowSel').onchange=(e)=>{SHOW_FPS=e.target.value==='1';save.showFps=SHOW_FPS;persist();applyFpsShow();e.target.blur();};
+applyFpsShow();
+
 // ── Главный цикл ──────────────────────────────────────────────
 const clock=new THREE.Clock();
 let frameAcc=0;
@@ -1120,6 +1130,7 @@ function loop(){
   requestAnimationFrame(loop);
   frameAcc+=clock.getDelta();
   if(FPS_CAP&&frameAcc<(1/FPS_CAP)*0.9)return;
+  if(SHOW_FPS){fpsN++;fpsT+=frameAcc;if(fpsT>=0.5){fpsEl.textContent=Math.round(fpsN/fpsT)+' FPS';fpsN=0;fpsT=0;}}
   const dt=Math.min(frameAcc,0.05); frameAcc=0; clockT+=dt;
   pad=input.poll(dt,{menuOpen});
   padActions();
