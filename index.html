@@ -75,6 +75,9 @@
     #crosshair::before { left: 12px; top: 0; width: 2px; height: 26px; }
     #crosshair::after { left: 0; top: 12px; width: 26px; height: 2px; }
     body.pad.editing:not(.menu) #crosshair { display: block; }
+
+    /* Счётчик FPS: справа под кнопкой меню, поверх меню тоже виден */
+    #fps { position: absolute; top: 52px; right: 12px; display: none; z-index: 30; pointer-events: none; font-size: 13px; color: #7dff9a; text-shadow: 1px 1px #000; background: rgba(0,0,0,0.45); padding: 2px 8px; border-radius: 10px; }
   </style>
 </head>
 <body>
@@ -91,6 +94,7 @@
   <button id="playmenu" class="openmenu" title="Меню (Esc)">☰ Меню</button>
   <div id="msg"></div>
   <div id="toast"></div>
+  <div id="fps"></div>
   <div id="status"></div>
   <div id="help"></div>
   <div id="crosshair"></div>
@@ -188,6 +192,7 @@
       <div class="shead">Графика и окружение</div>
       <div class="row">Графика: <select id="qualitySel"><option value="high">HIGH (PBR + SSAO)</option><option value="light">LIGHT (Быстро)</option></select></div>
       <div class="row">FPS: <select id="fpsSel"><option value="0">Максимум</option><option value="60">60 FPS</option><option value="30">30 FPS</option></select></div>
+      <div class="row">Счётчик FPS: <select id="fpsShowSel"><option value="0">Выкл</option><option value="1">Вкл</option></select></div>
       <div class="row">Время суток: <select id="timeSel"></select></div>
       <div class="row">Погода: <select id="weatherSel"></select></div>
       <div class="shead">Отражения SSR</div>
