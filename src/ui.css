@@ -144,3 +144,21 @@ input[type=range]:hover::-webkit-slider-thumb { background: var(--ice); }
 
 @media (max-width: 700px) { #status { top: 78px; } #help { display: none; } .hud-row { flex-wrap: wrap; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* ── Таблица рекордов ────────────────────────────────────────── */
+.lb-bar { width: min(94vw, 560px); }
+.lb-list { width: min(94vw, 560px); max-height: 44vh; min-height: 120px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;
+  padding: 10px; background: var(--pan); box-shadow: var(--edge); font-family: var(--fb); }
+.lb-empty { color: var(--dim); text-align: center; padding: 24px 10px; font-size: 14px; line-height: 1.5; }
+.lb-item { display: grid; grid-template-columns: 46px 1fr auto; align-items: center; gap: 10px; width: 100%; margin: 0; padding: 8px 10px;
+  text-align: left; font-family: var(--fb); font-size: 14px; line-height: 1.25; background: var(--pan2); }
+.lb-item .rk { font-family: var(--fh); font-size: 9px; color: var(--dim); }
+.lb-item:nth-child(-n+3) .rk { color: var(--gold); }
+.lb-item .mid { min-width: 0; }
+.lb-item .nk { display: block; font-weight: 600; color: var(--tx); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-item .sb { display: block; font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-item .tm { font-family: var(--fh); font-size: 10px; color: var(--mint); white-space: nowrap; }
+.lb-item.me .nk { color: var(--gold); }
+.lb-item:hover .sb, .lb-item.padfocus .sb { color: #fff; }
+.lb-line { font-family: var(--fb); font-size: 14px; line-height: 1.4; color: var(--mint); }
+@media (max-width: 700px) { .lb-item { grid-template-columns: 38px 1fr auto; gap: 6px; } .lb-item .tm { font-size: 9px; } }
