@@ -321,7 +321,7 @@ function sanitize(j) {
   const okShape=(poly)=>Array.isArray(poly)&&poly.length>=3&&poly.length<=40&&poly.every((pt)=>Array.isArray(pt)&&pt.length===2&&pt.every((v)=>num(v)&&Math.abs(v)<=0.5001))&&isSimplePolygon(poly);
   if (shapes.length>24||!shapes.every(okShape)) return null;
   const nShapes=SHAPES.length+shapes.length;
-  const okP=(a)=>Array.isArray(a)&&a.length>=5&&a.length<=9&&a.every(num)&&a.slice(0,3).every((v)=>Math.abs(v)<=300)&&a[3]>=1&&a[3]<=30&&a[4]>=1&&a[4]<=30&&(a[5]===undefined||(Number.isInteger(a[5])&&a[5]>=0&&a[5]<nShapes))&&(a[6]===undefined||Math.abs(a[6])<=720)&&(a[7]===undefined||Math.abs(a[7])<=60)&&(a[8]===undefined||(a[8]>=0.25&&a[8]<=20));
+  const okP=(a)=>Array.isArray(a)&&a.length>=5&&a.length<=9&&a.every(num)&&a.slice(0,3).every((v)=>Math.abs(v)<=300)&&a[3]>=0.5&&a[3]<=30&&a[4]>=0.5&&a[4]<=30&&(a[5]===undefined||(Number.isInteger(a[5])&&a[5]>=0&&a[5]<nShapes))&&(a[6]===undefined||Math.abs(a[6])<=720)&&(a[7]===undefined||Math.abs(a[7])<=60)&&(a[8]===undefined||(a[8]>=0.25&&a[8]<=20));
   if (!j.p.every(okP)) return null;
   const c=Array.isArray(j.c)?j.c.slice(0,200):[];
   if (!c.every((a)=>ok(a,3,-300,300))) return null;
