@@ -7,8 +7,14 @@
 // Дальность каждого прыжка считается из физики игрока (MOVE), поэтому уровень всегда проходим.
 // Один и тот же сид + стиль + сложность + длина всегда дают один и тот же уровень.
 //
+// Сложность (DIFFS): 1 лёгкий, 2 средний, 3 сложный, 4 ХАРДКОР.
+//   Хардкор: зазоры на пределе физики (98–120% дальности чистого прыжка; проходимо только с койот-временем
+//   и приземлением на самый край), платформы по 1–2 м, балки по 0,5 м, редкие и маленькие хабы
+//   и глава «Лифт-мост»: пропасть, посреди которой ездит крошечный лифт, не достающий до краёв.
+//   Лифты кладутся в lv.objs (формат объектов см. objects.js). В бесконечном режиме лифтов нет.
+//
 // Длина уровня (LENS):
-//   std  — стандартная (как раньше: 26 / 36 / 46 платформ в зависимости от сложности);
+//   std  — стандартная (как раньше: 26 / 36 / 46 / 60 платформ в зависимости от сложности);
 //   long — длинная (в 2.5 раза больше платформ, финальная звезда в конце);
 //   inf  — бесконечная: звезды нет, уровень растёт по мере продвижения игрока. Возвращённый уровень
 //          содержит функцию more(n), которая достраивает ещё n платформ в конец (новые платформы
@@ -28,13 +34,18 @@ export const STYLES = {
   mix: 'Микс глав', islands: 'Острова', tower: 'Башня', serpent: 'Серпантин',
   beams: 'Балки', ramps: 'Горки', hopper: 'Тренажёр прыжков',
 };
-export const DIFFS = { 1: 'Лёгкий', 2: 'Средний', 3: 'Сложный' };
+export const DIFFS = { 1: 'Лёгкий', 2: 'Средний', 3: 'Сложный', 4: 'Хардкор' };
 export const LENS = { std: 'Стандартная', long: 'Длинная', inf: 'Бесконечная' };
 
+// gapF — доля максимальной дальности прыжка; gapMax — потолок зазора, м (по умолчанию 6);
+// size — размеры платформ; up — максимальный подъём между платформами; beam/beamMin — ширина балок;
+// pmin — минимальная ширина столбов (по умолчанию 2.2)
 const DIFF = {
   1: { gapF: [0.22, 0.5], size: [3.6, 5.4], up: 1.0, beam: 2.6, total: 26 },
   2: { gapF: [0.4, 0.66], size: [2.8, 4.6], up: 1.3, beam: 1.8, total: 36 },
   3: { gapF: [0.58, 0.86], size: [2.0, 3.6], up: 1.55, beam: 1.2, total: 46 },
+  // Хардкор: у края прыжка (с учётом ~1.4 м допуска на край и койот-время это ≈97% от теоретического максимума)
+  4: { gapF: [0.98, 1.2], gapMax: 8, size: [1.2, 2.0], up: 1.75, beam: 0.5, beamMin: 0.5, pmin: 1.2, total: 60 },
 };
 
 // Какой по длине прыжок (между краями платформ) можно сделать, если приземляться выше на dy.
@@ -78,14 +89,18 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6, len = 'std'
   if (!LENS[len]) len = 'std';
   diff = DIFF[diff] ? +diff : 2;
   const D = DIFF[diff];
+  const hc = diff === 4;                    // хардкор
+  const withLifts = hc && len !== 'inf';    // лифты-мосты (в бесконечном уровне объекты добавлять некуда)
   // Стандартная длина использует прежнюю строку сида, поэтому старые уровни и ссылки не меняются
   const R = rngFrom(len === 'std' ? `${seed}|${style}|${diff}` : `${seed}|${style}|${diff}|${len}`);
   const rr = (a, b) => a + R() * (b - a);
   const ri = (a, b) => Math.floor(rr(a, b + 1));
   const pick = (arr) => arr[Math.floor(R() * arr.length)];
   const sz = (a, b) => rS(rr(a, b));
+  // Размер «вспомогательных» платформ глав: в хардкоре примерно вдвое меньше
+  const fz = (a, b) => (hc ? sz(a * 0.55, b * 0.6) : sz(a, b));
 
-  const plats = [], infos = [];
+  const plats = [], infos = [], objs = [];
   let curIdx = 0, ang = rr(-0.5, 0.5), exitY = 0, deadTo = 0;
 
   function reg(a, extra) {
@@ -155,16 +170,62 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6, len = 'std'
   }
 
   // Зазор для прыжка: доля от максимальной длины при данной разнице высот
-  const jg = (dy, f = rr(D.gapF[0], D.gapF[1])) => Math.max(0.9, Math.min(6, reach(dy) * f));
+  const jg = (dy, f = rr(D.gapF[0], D.gapF[1])) => Math.max(0.9, Math.min(D.gapMax ?? 6, reach(dy) * f));
   const pickDy = () => {
     const r = R();
-    let dy = r < 0.3 ? 0 : r < 0.7 ? rr(0.3, D.up) : -rr(0.4, 2.0);
+    let dy = hc
+      ? (r < 0.15 ? 0 : r < 0.7 ? rr(0.5, D.up) : -rr(0.8, 2.6)) // хардкор: чаще подъёмы почти до потолка прыжка
+      : (r < 0.3 ? 0 : r < 0.7 ? rr(0.3, D.up) : -rr(0.4, 2.0));
     if (exitY > 50 && dy > 0) dy = -dy;
     if (exitY < 1 && dy < 0) dy = Math.abs(dy) * 0.5;
     return dy;
   };
   const small = D.size[0] < 3.2;
   const SH_SMALL = [0, 0, 1, 1, 2, 3, 4, 5], SH_BIG = [0, 0, 1, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+
+  // ---------- Лифт-мост (только хардкор) ----------
+  // Две платформы на одном уровне и пропасть между ними. Посередине ездит маленький лифт, который в крайних точках
+  // не доходит до краёв на 2.8–3.8 м: надо прыгнуть на лифт, прокатиться и спрыгнуть на другой берег.
+  function liftBridge() {
+    const sv = { cur: curIdx, ang, ey: exitY, n: plats.length };
+    const rollback = () => { plats.length = sv.n; infos.length = sv.n; curIdx = sv.cur; ang = sv.ang; exitY = sv.ey; return false; };
+    const w = pick([2, 2.5]), g = rr(2.8, 3.8), G0 = w + 2 * g + rr(6, 13);
+    const bw = sz(2, 3), bs = pick([0, 1, 2]);
+    if (!attempt((turn) => ({ w: bw, d: bw, s: bs, dy: 0, gap: G0, turn, coin: 'top' }), rr(-0.4, 0.4))) return false;
+
+    const B = plats[curIdx], bi = infos[curIdx], A = plats[bi.from], Ap = infos[bi.from].parts;
+    let ux = B[0] - A[0], uz = B[2] - A[2];
+    const Ld = Math.hypot(ux, uz);
+    if (!Ap || Ld < 1) return rollback();
+    ux /= Ld; uz /= Ld;
+    // Где линия от центра A к центру B выходит из A и входит в B (идём шагами по 5 см)
+    const inside = (parts, t) => {
+      const x = A[0] + ux * t, z = A[2] + uz * t;
+      for (const q of parts) if (closest(q, x, z, tmpO) <= 0) return true;
+      return false;
+    };
+    let tA = null, tB = null;
+    for (let t = 30; t >= 0; t -= 0.05) if (inside(Ap, t)) { tA = t; break; }
+    for (let t = Ld - 30; t <= Ld; t += 0.05) if (inside(bi.parts, t)) { tB = t; break; }
+    if (tA === null || tB === null) return rollback();
+    const trav = Math.min(40, tB - tA - w - 2 * g);
+    if (trav < 3) return rollback();
+
+    const tm = (tA + tB) / 2, mx = A[0] + ux * tm, mz = A[2] + uz * tm, y = B[1];
+    const rot = Math.round(((-Math.atan2(ux, -uz) * 180) / Math.PI) * 100) / 100; // направление пути лифта = направление на B
+    // Путь лифта не должен упираться в чужие платформы
+    const sweep = worldParts(normPlat([mx, y, mz, w, trav + w, 0, rot, 0, 0.6])), sb = partsBounds(sweep);
+    for (let i = 0; i < infos.length - 1; i++) { // последний — сама B
+      const o = infos[i];
+      if (i === bi.from || o.dead) continue;
+      if (sb.minX - o.b.maxX > 0.8 || o.b.minX - sb.maxX > 0.8 || sb.minZ - o.b.maxZ > 0.8 || o.b.minZ - sb.maxZ > 0.8) continue;
+      if (gapParts(sweep, o.parts) >= 0.8) continue;
+      if (sb.lo >= o.b.hi + 2.2 || o.b.lo >= sb.hi + 2.2) continue;
+      return rollback();
+    }
+    objs.push([4, q4(mx), y, q4(mz), rot, w, Math.round(trav * 10) / 10, 0]);
+    return true;
+  }
 
   // ---------- Главы ----------
   const segs = {
@@ -186,7 +247,7 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6, len = 'std'
     // Узкие столбы, торчащие из бездны
     pillars(n) {
       for (let i = 0; i < n; i++) {
-        const dy = (i % 2 ? -1 : 1) * rr(0.2, D.up), w = sz(Math.max(2.2, D.size[0] - 0.4), D.size[0] + 0.6), s = pick([0, 1, 2]);
+        const dy = (i % 2 ? -1 : 1) * rr(0.2, D.up), w = sz(Math.max(D.pmin ?? 2.2, D.size[0] - 0.4), D.size[0] + 0.6), s = pick([0, 1, 2]);
         const k = sz(6, 14), gap = jg(dy);
         if (!attempt((turn) => ({ w, d: w, s, k, dy, gap, turn }), rr(-0.7, 0.7))) return false;
       }
@@ -198,10 +259,10 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6, len = 'std'
       for (let f = 0; f < fl; f++) {
         for (let j = 0, m = ri(3, 5); j < m; j++) {
           if (exitY > 55) return true;
-          const dy = rr(0.6, D.up), w = sz(3, 4.4), d = sz(3, 4.4), s = pick([0, 2, 1]), gap = jg(dy) * 0.85;
+          const dy = rr(0.6, D.up), w = fz(3, 4.4), d = fz(3, 4.4), s = pick([0, 2, 1]), gap = jg(dy) * 0.85;
           if (!attempt((turn) => ({ w, d, s, dy, gap, turn }), j === 0 ? pend : rr(-0.15, 0.15))) return false;
         }
-        const L = sz(5, 6.5), s = pick([1, 2, 0]), dy = rr(0.3, 0.9), gap = jg(0.6) * 0.8;
+        const L = fz(5, 6.5), s = pick([1, 2, 0]), dy = rr(0.3, 0.9), gap = jg(0.6) * 0.8;
         if (!attempt((turn) => ({ w: L, d: L, s, dy, gap, turn, coin: 'none' }), 0)) return false;
         pend = dir * rr(1.35, 1.75); dir = -dir;
       }
@@ -212,21 +273,22 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6, len = 'std'
       const dT = (R() < 0.5 ? 1 : -1) * rr(0.5, 0.72);
       for (let i = 0; i < n; i++) {
         if (down ? exitY < 2 : exitY > 58) return true;
-        const dy = down ? -rr(0.8, 1.6) : rr(0.8, D.up), w = sz(3, 4.2), s = [2, 1, 0][i % 3], gap = jg(dy) * 0.8;
+        const dy = down ? -rr(0.8, 1.6) : rr(0.8, D.up), w = fz(3, 4.2), s = [2, 1, 0][i % 3], gap = jg(dy) * 0.8;
         if (!attempt((turn) => ({ w, d: w, s, dy, gap, turn }), dT)) return false;
       }
       return true;
     },
     // Узкие балки с площадками на поворотах (и иногда с разрывом посередине)
     beams(n) {
-      const bw = Math.max(1, rS(rr(D.beam, D.beam + 0.5))), sg = R() < 0.5 ? 1 : -1;
+      const bw = Math.max(D.beamMin ?? 1, rS(rr(D.beam, D.beam + 0.5))), sg = R() < 0.5 ? 1 : -1;
       const pad = (gap) => {
         const s = pick([0, 1, 2]);
-        return attempt((turn) => ({ w: 4, d: 4, s, dy: 0, gap, turn, coin: 'none' }), 0);
+        const pw = hc ? 2.5 : 4;
+        return attempt((turn) => ({ w: pw, d: pw, s, dy: 0, gap, turn, coin: 'none' }), 0);
       };
       if (!pad(jg(0) * 0.8)) return false;
       for (let i = 0; i < n; i++) {
-        const len = sz(6, 14), brk = R() < 0.3, turn0 = (i % 2 ? -sg : sg) * (Math.PI / 2);
+        const len = sz(6, 14), brk = R() < (hc ? 0.6 : 0.3), turn0 = (i % 2 ? -sg : sg) * (Math.PI / 2);
         if (!attempt((turn) => ({ w: bw, d: len, s: 0, dy: 0, gap: 0.05, turn }), turn0)) return false;
         if (brk) {
           const len2 = sz(5, 9), gap = jg(0);
@@ -240,16 +302,17 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6, len = 'std'
     ramps(n) {
       for (let i = 0; i < n; i++) {
         const up = exitY > 45 ? false : exitY < 2 ? true : R() < 0.55;
-        const t = ri(14, 28), len = sz(6, 10), w = sz(3.2, 4.8), g0 = i === 0 ? jg(0) * 0.7 : 0.05;
+        const t = ri(14, 28), len = sz(6, 10), w = fz(3.2, 4.8), g0 = i === 0 ? jg(0) * 0.7 : 0.05;
         if (!attempt((turn) => ({ w, d: len, s: 0, t: up ? t : -t, dy: 0, gap: g0, turn, coin: 'none' }), rr(-0.5, 0.5))) return false;
-        const lw = sz(3.5, 5.2), gl = R() < 0.55 ? 0.05 : jg(0) * 0.9, s = pick([0, 1, 2]);
+        const lw = fz(3.5, 5.2), gl = R() < 0.55 ? 0.05 : jg(0) * 0.9, s = pick([0, 1, 2]);
         if (!attempt((turn) => ({ w: lw, d: lw, s, dy: 0, gap: gl, turn }), 0)) return false;
       }
       return true;
     },
     // Ритм-прыжки: одинаковые плиточки, зазор растёт к концу главы
     hopper(n) {
-      const s = pick([1, 2, 0]), w = sz(Math.max(2, D.size[0] * 0.85), Math.max(2.5, D.size[0] * 1.15));
+      const s = pick([1, 2, 0]);
+      const w = sz(Math.max(hc ? 1 : 2, D.size[0] * 0.85), Math.max(hc ? 1.5 : 2.5, D.size[0] * 1.15));
       const wave = R() < 0.5, amp = rr(0.5, Math.min(1.2, D.up));
       for (let i = 0; i < n; i++) {
         const f = D.gapF[0] + (D.gapF[1] - D.gapF[0]) * (n > 1 ? i / (n - 1) : 0.5);
@@ -274,21 +337,27 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6, len = 'std'
     stairs(n) {
       for (let i = 0; i < n; i++) {
         if (exitY > 55) return true;
-        const w = sz(3, 4), d = sz(4, 6), g0 = i === 0 ? jg(0) * 0.6 : 0.05;
+        const w = fz(3, 4), d = fz(4, 6), g0 = i === 0 ? jg(0) * 0.6 : 0.05;
         if (!attempt((turn) => ({ w, d, s: 13, dy: 0, rise: 1.5, gap: g0, turn, coin: 'none' }), i === 0 ? rr(-0.4, 0.4) : 0)) return false;
       }
-      const lw = sz(4, 5.5);
+      const lw = fz(4, 5.5);
       return attempt((turn) => ({ w: lw, d: lw, s: 1, dy: 0, gap: 0.05, turn }), 0);
+    },
+    // Лифт-мост (только хардкор): прыжок на движущийся лифт и с него на другой берег
+    lifts(n) {
+      for (let i = 0; i < n; i++) if (!liftBridge()) return i > 0;
+      return true;
     },
   };
 
-  // Большая площадка-хаб с боковыми площадками за монетами
+  // Большая площадка-хаб с боковыми площадками за монетами (в хардкоре — маленькая и редкая)
   function hub() {
-    const s = pick([1, 2, 10, 6, 0, 1, 2]), w = s === 10 ? sz(8, 10) : sz(7, 10), dy = rr(0.2, 0.9), gap = jg(dy) * 0.75;
+    const s = hc ? pick([0, 1, 2]) : pick([1, 2, 10, 6, 0, 1, 2]);
+    const w = hc ? sz(3.5, 5) : s === 10 ? sz(8, 10) : sz(7, 10), dy = rr(0.2, 0.9), gap = jg(dy) * 0.75;
     if (!attempt((turn) => ({ w, d: w, s, dy, gap, turn, coin: 'none', hub: true }), rr(-0.4, 0.4))) return false;
     for (const sg of [-1, 1]) {
       if (R() > 0.55) continue;
-      const sv = [curIdx, ang, exitY], pw = sz(2.4, 3.2), ps = pick([1, 2]), pdy = rr(-0.4, 0.9), pgap = jg(pdy) * 0.8;
+      const sv = [curIdx, ang, exitY], pw = hc ? sz(1.5, 2.2) : sz(2.4, 3.2), ps = pick([1, 2]), pdy = rr(-0.4, 0.9), pgap = jg(pdy) * 0.8;
       attempt((turn) => ({ w: pw, d: pw, s: ps, dy: pdy, gap: pgap, turn, coin: 'branch' }), sg * (Math.PI / 2) + rr(-0.3, 0.3));
       [curIdx, ang, exitY] = sv; // боковая площадка — тупик, основной путь продолжается от хаба
     }
@@ -303,8 +372,13 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6, len = 'std'
     ramps: ['ramps', 'islands', 'ramps', 'ramps'],
     hopper: ['hopper', 'zigzag', 'pillars', 'hopper', 'hopper'],
   };
-  const ALL = ['islands', 'pillars', 'serp', 'spiral', 'beams', 'ramps', 'hopper', 'zigzag', 'stairs'];
-  const COUNT = { islands: [5, 9], pillars: [5, 8], serp: [2, 3], spiral: [8, 14], beams: [2, 4], ramps: [2, 4], hopper: [6, 9], zigzag: [5, 8], stairs: [2, 3] };
+  let ALL = ['islands', 'pillars', 'serp', 'spiral', 'beams', 'ramps', 'hopper', 'zigzag', 'stairs'];
+  if (withLifts) {
+    ALL = [...ALL, 'lifts', 'lifts'];
+    // В хардкоре после каждой второй главы плана добавляется лифт-мост
+    for (const k of Object.keys(PLAN)) PLAN[k] = PLAN[k].flatMap((n, i) => (i % 2 ? [n, 'lifts'] : [n]));
+  }
+  const COUNT = { islands: [5, 9], pillars: [5, 8], serp: [2, 3], spiral: [8, 14], beams: [2, 4], ramps: [2, 4], hopper: [6, 9], zigzag: [5, 8], stairs: [2, 3], lifts: [1, 2] };
   const run = (name) => {
     const n = ri(...COUNT[name]);
     return name === 'spiral' ? segs.spiral(n, exitY > 35) : segs[name](n);
@@ -327,7 +401,7 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6, len = 'std'
         last = name;
         const before = plats.length;
         if (!run(name) || plats.length === before) fails++;
-        if (plats.length < target && R() < 0.85) hub();
+        if (plats.length < target && R() < (hc ? 0.25 : 0.85)) hub();
       }
       if (plats.length >= target || retries-- <= 0) break;
       backtrack(); fails = 0;
@@ -337,13 +411,14 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6, len = 'std'
   const longMode = len === 'long', inf = len === 'inf';
   // std: как раньше (D.total ± разброс, не больше 60); long: в 2.5 раза больше (не больше 130); inf: стартовый отрезок
   const target = inf ? 24 : Math.min(longMode ? 130 : 60, Math.round(D.total * (longMode ? 2.5 : 1)) + ri(-4, 6));
-  grow(target, longMode ? 6 : inf ? 6 : 4, longMode ? 12 : inf ? 6 : 0);
+  grow(target, longMode ? 6 : inf ? 6 : hc ? 6 : 4, longMode ? 12 : inf ? 6 : hc ? 4 : 0);
   if (plats.length < 8) segs.islands(10);
 
   // Финал: большая площадка со звездой (в бесконечном уровне её нет)
   let fin = null;
   if (!inf) {
-    const fs = pick([1, 10, 2]), fw = fs === 10 ? sz(8, 9) : sz(6, 8), fdy = rr(0.2, 0.8), fgap = jg(0.5) * 0.75;
+    const fs = hc ? pick([1, 2, 0]) : pick([1, 10, 2]);
+    const fw = hc ? sz(3, 4) : fs === 10 ? sz(8, 9) : sz(6, 8), fdy = rr(0.2, 0.8), fgap = jg(0.5) * 0.75;
     attempt((turn) => ({ w: fw, d: fw, s: fs, dy: fdy, gap: fgap, turn, coin: 'none' }), 0);
     fin = plats[curIdx];
   }
@@ -372,7 +447,7 @@ export function generate(seed, style = 'mix', diff = 2, nThemes = 6, len = 'std'
   const end = inf ? plats[curIdx] : fin;
   const level = {
     name: `${STYLES[style]}: ${seed}${longMode ? ' · длинный' : inf ? ' · ∞' : ''}`, seed: String(seed), style, diff, len,
-    plats, coins, hubs, goal: [end[0], end[1] + 1.6, end[2]], start: [0, 0, 0],
+    plats, coins, hubs, objs, goal: [end[0], end[1] + 1.6, end[2]], start: [0, 0, 0],
     shapes: [], req: false, theme: Math.floor(R() * nThemes),
   };
 
