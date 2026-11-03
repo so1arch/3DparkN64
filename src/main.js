@@ -284,12 +284,13 @@ function setShine(m, rough, metal) {
 const SAVE_KEY = 'n64parkour.v1';
 const AUDIO_VER = 2; // 2: громкость эффектов по умолчанию снижена с 80 % до 50 %
 const MUSIC_AUTO = 11, MUSIC_VER = 2; // 11 — «Авто (по времени и погоде)»; версия 2: Авто стало мелодией по умолчанию
-let save = { best:{}, skin:null, quality:QUALITY, fps:FPS_CAP, showFps:SHOW_FPS, musicPreset:MUSIC_AUTO, musicVer:MUSIC_VER, audio:null, audioVer:AUDIO_VER, time:TIME, weather:WEATHER, ssr:SSR };
+let save = { best:{}, skin:null, quality:QUALITY, fps:FPS_CAP, showFps:SHOW_FPS, musicPreset:MUSIC_AUTO, musicVer:MUSIC_VER, audio:null, audioVer:AUDIO_VER, time:TIME, weather:WEATHER, ssr:SSR, view:'tp' };
 let musicPreset = MUSIC_AUTO;
 try {
   const s = JSON.parse(localStorage.getItem(SAVE_KEY) || '{}');
   if (s.best && typeof s.best==='object') save.best=s.best;
   if (s.skin && typeof s.skin==='object') save.skin=s.skin;
+  if (s.view==='fp') save.view='fp'; // вид от первого лица (V / R3)
   if (Number.isInteger(Number(s.musicPreset)) && Number(s.musicPreset)>=0 && Number(s.musicPreset)<MUSIC_NAMES.length) { musicPreset=Number(s.musicPreset); save.musicPreset=musicPreset; }
   // старые сохранения хранили прежний трек по умолчанию (1): один раз переводим на «Авто»
   if ((s.musicVer|0)<MUSIC_VER && musicPreset===1) { musicPreset=MUSIC_AUTO; save.musicPreset=musicPreset; }
@@ -599,8 +600,22 @@ const mouse=new THREE.Vector2();
 let pad=input.idle; // состояние геймпада за текущий кадр (см. input.js)
 let padFocusEl=null; // выбранная геймпадом кнопка меню (для звука «шагов» по меню)
 
+// ── Вид от первого лица (клавиша V / R3 на геймпаде) ──────────
+let fpv=save.view==='fp',fpPitch=0;
+function setView(on){
+  fpv=on;fpPitch=0;snapCam=true;
+  save.view=on?'fp':'tp';persist();
+  toast(on?'Вид от первого лица (V — вернуть)':'Вид от третьего лица');
+  audio.sfx('tick',{rate:on?1.3:0.85});
+}
+// Угол обзора: в первом лице шире; в редакторе всегда обычный
+function applyFov(){
+  const f=fpv&&mode==='play'?75:60;
+  if(camera.fov!==f){camera.fov=f;camera.updateProjectionMatrix();}
+}
+
 // ── Подсказки управления (заметные, но ненавязчивые) ──────────
-const HELP_PLAY  = 'WASD — движение  •  Пробел — прыжок\nQ/E — камера  •  R — заново  •  Esc — меню';
+const HELP_PLAY  = 'WASD — движение  •  Пробел — прыжок\nQ/E — камера  •  V — вид  •  R — заново  •  Esc — меню';
 const HELP_EDIT  = 'ЛКМ — поставить  •  ПКМ — стереть\nКолесо — зум  •  R — поворот  •  Z/X — высота  •  F — вся карта';
 
 // Все подсказки, зависящие от устройства ввода, обновляются здесь (вызывается при смене устройства)
@@ -722,7 +737,7 @@ addEventListener('keydown',(e)=>{
   keys[e.code]=true;
   if(e.code==='Space'||e.code.startsWith('Arrow'))e.preventDefault();
   if(e.code==='KeyM'||(e.code==='Escape'&&!(mode==='edit'&&ed.draw.length)))toggleMenu();
-  if(mode==='play'){if(e.code==='Space')jumpBuf=0.15;if(e.code==='KeyR'){audio.sfx('restart');reset();}}
+  if(mode==='play'){if(e.code==='Space')jumpBuf=0.15;if(e.code==='KeyR'){audio.sfx('restart');reset();}if(e.code==='KeyV'&&!e.repeat)setView(!fpv);}
   else {
     if(e.code==='KeyZ'&&(e.ctrlKey||e.metaKey)){e.preventDefault();undo();return;}
     if(e.code==='Enter'&&ed.tool==='draw'){e.preventDefault();finishDraw();}
@@ -738,7 +753,7 @@ addEventListener('keydown',(e)=>{
 });
 addEventListener('keyup',(e)=>{keys[e.code]=false;});
 addEventListener('blur',()=>{for(const k in keys)keys[k]=false;});
-addEventListener('mousemove',(e)=>{if(mode==='play'&&!menuOpen&&e.buttons)camA-=e.movementX*0.005;});
+addEventListener('mousemove',(e)=>{if(mode==='play'&&!menuOpen&&e.buttons){camA-=e.movementX*0.005;if(fpv)fpPitch=Math.max(-1.45,Math.min(1.45,fpPitch-e.movementY*0.005));}});
 // Захват курсора на время поворота камеры: он не упирается в край экрана (отпустили кнопку: курсор свободен)
 renderer.domElement.addEventListener('mousedown',()=>{
   if(mode!=='play'||menuOpen)return;
@@ -790,14 +805,23 @@ function update(dt){
   if(hv!==lastHud){lastHud=hv;hCoins.textContent=inf?'':`×${got}/${coins.length}`;hNeed.textContent=inf?`▲ ${infState.top}`:(need?'нужны все':'');hNeed.style.color=inf?'#7dff9a':'#ff5555';hTime.textContent=time.toFixed(1);hBest.textContent=bs;}
   skinAnim(clockT);
   player.position.copy(p); knightAnim(dt,len>0,st.onGround); player.rotation.y=face;
+  player.visible=!fpv; // в первом лице себя не видно (тень остаётся)
   // Шаги: звук на каждый «шаг» ног (фаза бега растёт только когда бежим по земле)
   const sIdx=Math.floor(kn.phase/Math.PI);
   if(sIdx!==lastStep){lastStep=sIdx;audio.sfx('step',{vol:0.45+0.55*mag,rate:(sIdx&1)?0.92:1.06});}
   const gy=supportY(parts,p.x,p.z,p.y+0.05);
   shadow.visible=gy>-Infinity; shadow.position.set(p.x,gy+0.02,p.z);
-  tmp.set(p.x+Math.sin(camA)*8,p.y+4.5,p.z+Math.cos(camA)*8);
-  if(snapCam)camera.position.copy(tmp);else camera.position.lerp(tmp,1-Math.exp(-6*dt));
-  camera.lookAt(p.x,p.y+1.2,p.z); snapCam=false;
+  if(fpv){
+    // глаза на уровне головы; взгляд задают camA (поворот) и fpPitch (наклон)
+    fpPitch=Math.max(-1.45,Math.min(1.45,fpPitch+((keys.ArrowUp?1:0)-(keys.ArrowDown?1:0)+pad.lookY*1.4)*2*dt));
+    camera.position.set(p.x,p.y+1.55,p.z);
+    camera.rotation.set(fpPitch,camA,0);
+    snapCam=false;
+  }else{
+    tmp.set(p.x+Math.sin(camA)*8,p.y+4.5,p.z+Math.cos(camA)*8);
+    if(snapCam)camera.position.copy(tmp);else camera.position.lerp(tmp,1-Math.exp(-6*dt));
+    camera.lookAt(p.x,p.y+1.2,p.z); snapCam=false;
+  }
 }
 
 // ── Редактор ───────────────────────────────────────────────────
@@ -1107,7 +1131,7 @@ function padActions(){
     return;
   }
   if(pad.start)return toggleMenu();
-  if(mode==='play'){if(pad.back&&testRun)setTab('edit');}
+  if(mode==='play'){if(pad.back&&testRun)setTab('edit');if(pad.r3)setView(!fpv);}
 }
 // Редактор с геймпада: в центре экрана прицел, он заменяет курсор мыши
 function padEdit(){
@@ -1229,6 +1253,7 @@ function loop(){
   const dt=Math.min(frameAcc,0.05); frameAcc=0; clockT+=dt;
   pad=input.poll(dt,{menuOpen});
   padActions();
+  applyFov(); // угол обзора: шире в первом лице
   // Геймпад двигает рамку по меню: тихий «тик» на каждый переход
   if(menuOpen&&input.device==='pad'){const c=input._cur;if(c!==padFocusEl){padFocusEl=c;if(c)audio.sfx('move');}}else padFocusEl=null;
   if(!menuOpen){if(mode==='play')update(dt);else updateEdit(dt);}
