@@ -284,13 +284,12 @@ function setShine(m, rough, metal) {
 const SAVE_KEY = 'n64parkour.v1';
 const AUDIO_VER = 2; // 2: громкость эффектов по умолчанию снижена с 80 % до 50 %
 const MUSIC_AUTO = 11, MUSIC_VER = 2; // 11 — «Авто (по времени и погоде)»; версия 2: Авто стало мелодией по умолчанию
-let save = { best:{}, skin:null, quality:QUALITY, fps:FPS_CAP, showFps:SHOW_FPS, musicPreset:MUSIC_AUTO, musicVer:MUSIC_VER, audio:null, audioVer:AUDIO_VER, time:TIME, weather:WEATHER, ssr:SSR, view:'tp' };
+let save = { best:{}, skin:null, quality:QUALITY, fps:FPS_CAP, showFps:SHOW_FPS, musicPreset:MUSIC_AUTO, musicVer:MUSIC_VER, audio:null, audioVer:AUDIO_VER, time:TIME, weather:WEATHER, ssr:SSR };
 let musicPreset = MUSIC_AUTO;
 try {
   const s = JSON.parse(localStorage.getItem(SAVE_KEY) || '{}');
   if (s.best && typeof s.best==='object') save.best=s.best;
   if (s.skin && typeof s.skin==='object') save.skin=s.skin;
-  if (s.view==='fp') save.view='fp'; // вид от первого лица (V / R3)
   if (Number.isInteger(Number(s.musicPreset)) && Number(s.musicPreset)>=0 && Number(s.musicPreset)<MUSIC_NAMES.length) { musicPreset=Number(s.musicPreset); save.musicPreset=musicPreset; }
   // старые сохранения хранили прежний трек по умолчанию (1): один раз переводим на «Авто»
   if ((s.musicVer|0)<MUSIC_VER && musicPreset===1) { musicPreset=MUSIC_AUTO; save.musicPreset=musicPreset; }
@@ -471,17 +470,19 @@ function buildKnight(parent, mats, dM, sM) {
   sp('belt',armR,0.36,0.06,0.09,0.06,-0.26,0.18);         // гарда
   sp('belt',armR,0.08,0.22,0.08,0.06,-0.40,0.18);         // рукоять
   // ─────────────────────────────────────────────────────────────
-  sp('head',parent,0.46,0.46,0.46,0,1.38,0);
-  sp('head',parent,0.5,0.1,0.5,0,1.18,0);
-  box(parent,0.34,0.07,0.04,dM,0,1.4,0.24);
-  box(parent,0.05,0.22,0.04,dM,0,1.3,0.24);
-  sp('cap',parent,0.1,0.18,0.5,0,1.69,-0.02);
-  sp('cap',parent,0.1,0.3,0.12,0,1.55,-0.3);
-  return {legL,legR,armL,armR};
+  const headParts=[
+    sp('head',parent,0.46,0.46,0.46,0,1.38,0),
+    sp('head',parent,0.5,0.1,0.5,0,1.18,0),
+    box(parent,0.34,0.07,0.04,dM,0,1.4,0.24),
+    box(parent,0.05,0.22,0.04,dM,0,1.3,0.24),
+    sp('cap',parent,0.1,0.18,0.5,0,1.69,-0.02),
+    sp('cap',parent,0.1,0.3,0.12,0,1.55,-0.3),
+  ];
+  return {legL,legR,armL,armR,headParts};
 }
 
 const player=new THREE.Group();
-const {legL,legR,armL,armR}=buildKnight(player,skinMats,darkMat,steelMat);
+const {legL,legR,armL,armR,headParts}=buildKnight(player,skinMats,darkMat,steelMat);
 scene.add(player);
 // Персонаж отражает окружение в SSR (если не выключено в настройках)
 function markPlayerSSR(){player.traverse((o)=>{if(o.isMesh)o.userData.ssr=SSR.player;});}
@@ -496,14 +497,20 @@ function applySkin(sk) {
     if (pvMats[k]) { pvMats[k].color.setHex(sk[k]); pvMats[k].roughness=sk.rough??0.55; pvMats[k].metalness=sk.metal??0.1; }
   }
 }
-const kn={phase:0,swing:0,air:0};
+const kn={phase:0,swing:0,air:0,fp:0};
 function knightAnim(dt,moving,grounded) {
   kn.phase+=dt*(moving&&grounded?14:0);
   const k=Math.min(1,14*dt);
   kn.swing+=((moving&&grounded?Math.sin(kn.phase)*0.75:0)-kn.swing)*k;
   kn.air+=((grounded?0:1)-kn.air)*k;
   legL.rotation.x=kn.swing*(1-kn.air*0.6); legR.rotation.x=-kn.swing*(1-kn.air*0.6);
-  armL.rotation.x=-kn.swing*0.8-kn.air*0.9; armR.rotation.x=kn.swing*0.8-kn.air*1.6;
+  kn.fp+=((fpv?1:0)-kn.fp)*k;
+  let aL=-kn.swing*0.8-kn.air*0.9, aR=kn.swing*0.8-kn.air*1.6;
+  if(kn.fp>0.001){ // первое лицо: руки впереди (левая со щитом ниже, правая с мечом), лёгкое покачивание
+    aL+=((-1.0-kn.swing*0.12-kn.air*0.35)-aL)*kn.fp;
+    aR+=((-0.7+kn.swing*0.12-kn.air*0.45)-aR)*kn.fp;
+  }
+  armL.rotation.x=aL; armR.rotation.x=aR;
   player.position.y=p.y+(grounded&&moving?Math.abs(Math.sin(kn.phase))*0.05:0);
 }
 function skinAnim(t) {
@@ -601,10 +608,13 @@ let pad=input.idle; // состояние геймпада за текущий �
 let padFocusEl=null; // выбранная геймпадом кнопка меню (для звука «шагов» по меню)
 
 // ── Вид от первого лица (клавиша V / R3 на геймпаде) ──────────
-let fpv=save.view==='fp',fpPitch=0;
+// Всегда начинаем с третьего лица. В первом лице курсор захвачен (pointer lock): камера крутится мышью без зажатой кнопки.
+let fpv=false,fpPitch=0;
+function lockPointer(){try{const r=renderer.domElement.requestPointerLock();if(r&&r.catch)r.catch(()=>{});}catch{ /* захват недоступен */ }}
+function unlockPointer(){try{if(document.pointerLockElement)document.exitPointerLock();}catch{ /* ignore */ }}
 function setView(on){
   fpv=on;fpPitch=0;snapCam=true;
-  save.view=on?'fp':'tp';persist();
+  if(on)lockPointer();else unlockPointer();
   toast(on?'Вид от первого лица (V — вернуть)':'Вид от третьего лица');
   audio.sfx('tick',{rate:on?1.3:0.85});
 }
@@ -753,13 +763,14 @@ addEventListener('keydown',(e)=>{
 });
 addEventListener('keyup',(e)=>{keys[e.code]=false;});
 addEventListener('blur',()=>{for(const k in keys)keys[k]=false;});
-addEventListener('mousemove',(e)=>{if(mode==='play'&&!menuOpen&&e.buttons){camA-=e.movementX*0.005;if(fpv)fpPitch=Math.max(-1.45,Math.min(1.45,fpPitch-e.movementY*0.005));}});
+addEventListener('mousemove',(e)=>{if(mode==='play'&&!menuOpen&&(e.buttons||document.pointerLockElement)){camA-=e.movementX*0.005;if(fpv)fpPitch=Math.max(-1.45,Math.min(1.45,fpPitch-e.movementY*0.005));}});
 // Захват курсора на время поворота камеры: он не упирается в край экрана (отпустили кнопку: курсор свободен)
 renderer.domElement.addEventListener('mousedown',()=>{
   if(mode!=='play'||menuOpen)return;
-  try{const r=renderer.domElement.requestPointerLock();if(r&&r.catch)r.catch(()=>{});}catch{ /* захват недоступен: камера работает как раньше */ }
+  lockPointer();
 });
-addEventListener('mouseup',()=>{if(document.pointerLockElement)document.exitPointerLock();});
+// В третьем лице курсор отпускаем вместе с кнопкой, в первом он остаётся захваченным
+addEventListener('mouseup',()=>{if(!fpv)unlockPointer();});
 
 function win(){
   won=true; audio.sfx('win'); const total=coins.length; let extra='';
@@ -780,6 +791,7 @@ function update(dt){
   if(len>0){dx/=len;dz/=len;face=Math.atan2(dx,dz);}
   v.x=dx*SPEED*mag;v.z=dz*SPEED*mag;
   { const oc=ents.drive(dt,p,v,st,{f,dx,dz,len,mag}); if(oc.face!=null)face=oc.face; } // лестница, ускоритель, батут, лифт
+  if(fpv&&!ents.climbing)face=camA+Math.PI; // первое лицо: тело всегда смотрит туда же, куда камера
   coyote=st.onGround||ents.climbing?0.1:coyote-dt; jumpBuf-=dt; if(pad.jump)jumpBuf=0.15;
   if(jumpBuf>0&&coyote>0&&!ents.noJump){if(ents.climbing)ents.release(0.35,true);v.y=JUMP;coyote=0;jumpBuf=0;st.onGround=false;dustRing(p.x,p.y,p.z,7,1.8,0.28);audio.sfx('jump');}
   const n=Math.max(1,Math.ceil(dt/0.01)),h=dt/n; let landVy=0;
@@ -805,7 +817,7 @@ function update(dt){
   if(hv!==lastHud){lastHud=hv;hCoins.textContent=inf?'':`×${got}/${coins.length}`;hNeed.textContent=inf?`▲ ${infState.top}`:(need?'нужны все':'');hNeed.style.color=inf?'#7dff9a':'#ff5555';hTime.textContent=time.toFixed(1);hBest.textContent=bs;}
   skinAnim(clockT);
   player.position.copy(p); knightAnim(dt,len>0,st.onGround); player.rotation.y=face;
-  player.visible=!fpv; // в первом лице себя не видно (тень остаётся)
+  player.visible=true; for(const h of headParts)h.visible=!fpv; // в первом лице видно тело и руки, голова скрыта
   // Шаги: звук на каждый «шаг» ног (фаза бега растёт только когда бежим по земле)
   const sIdx=Math.floor(kn.phase/Math.PI);
   if(sIdx!==lastStep){lastStep=sIdx;audio.sfx('step',{vol:0.45+0.55*mag,rate:(sIdx&1)?0.92:1.06});}
@@ -814,7 +826,7 @@ function update(dt){
   if(fpv){
     // глаза на уровне головы; взгляд задают camA (поворот) и fpPitch (наклон)
     fpPitch=Math.max(-1.45,Math.min(1.45,fpPitch+((keys.ArrowUp?1:0)-(keys.ArrowDown?1:0)+pad.lookY*1.4)*2*dt));
-    camera.position.set(p.x,p.y+1.55,p.z);
+    camera.position.set(p.x-Math.sin(camA)*0.12,p.y+1.42,p.z-Math.cos(camA)*0.12); // чуть впереди шеи: видны плечи, руки и ноги
     camera.rotation.set(fpPitch,camA,0);
     snapCam=false;
   }else{
@@ -978,13 +990,13 @@ function showMenu(screen){
   menuOpen=!!screen; menuScreen=screen||'main';
   document.body.classList.toggle('menu',menuOpen);
   document.querySelectorAll('.screen').forEach((el)=>el.classList.toggle('on',!!screen&&el.id==='scr-'+screen));
-  if(menuOpen){for(const k in keys)keys[k]=false;jumpBuf=0;}
+  if(menuOpen){for(const k in keys)keys[k]=false;jumpBuf=0;unlockPointer();}
   if(screen==='main')$('mPlay').textContent=introDone?'▶ Продолжить':'▶ Играть';
   if(screen==='work')loadWork();
   if(screen==='lb')lb.open();
   if(screen==='char')initCharPreview();
   // Музыка стартует при закрытии меню
-  if(!screen)startMusic();
+  if(!screen){startMusic();if(fpv&&mode==='play')lockPointer();}
   if(screen&&input.device==='pad')input.menuFocusFirst();else input.clearFocus();
 }
 const toggleMenu=()=>showMenu(menuOpen?null:'main');
