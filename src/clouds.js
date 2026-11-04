@@ -103,8 +103,8 @@ function fragSrc(high) {
   return defs + `
 #define SIGMA 0.45
 
-uniform sampler3D uNoise;
 precision highp sampler3D;
+uniform sampler3D uNoise;
 uniform float uTime, uRain, uMidK, uMaxDist, uTubeOn, uDebug;
 uniform vec2 uWind, uFogRange, uNearFar, uHull;
 uniform vec3 uCamPos, uCamFwd, uFocus, uLit, uShade, uGlow, uSunDir, uFogColor, uBand0, uBand1, uBand2;
