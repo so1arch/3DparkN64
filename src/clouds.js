@@ -124,7 +124,7 @@ precision highp sampler2D;
 precision highp sampler3D;
 uniform sampler3D uNoise;
 uniform sampler2D uDepth;
-uniform float uTime, uRain, uMidK, uMaxDist, uTubeOn, uDebug;
+uniform float uTime, uRain, uMidK, uMaxDist, uTubeOn, uDebug, uUseDepth;
 uniform vec2 uWind, uFogRange, uNearFar, uHull;
 uniform vec3 uCamPos, uCamFwd, uFocus, uLit, uShade, uGlow, uSunDir, uFogColor, uBand0, uBand1, uBand2;
 varying vec3 vRay;
@@ -228,8 +228,13 @@ float hg(float c, float g) { float g2 = g * g; return (1.0 - g2) / pow(1.0 + g2 
 float ign(vec2 fc) { return fract(52.9829189 * fract(dot(fc, vec2(0.06711056, 0.00583715)))); }
 
 void main() {
-  // Проверка тракта отрисовки (адрес игры с ?clouds=debug): сплошной розовый экран поверх игры
-  if (uDebug > 0.5) { gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }
+  // Глубина платформ (в разрешении игры): расстояние до ближайшей платформы вдоль экранного пикселя
+  float dep = texture(uDepth, vUv).r;
+  float zn = dep * 2.0 - 1.0;
+  float vz = 2.0 * uNearFar.x * uNearFar.y / (uNearFar.y + uNearFar.x - zn * (uNearFar.y - uNearFar.x));
+  // Проверка тракта отрисовки: ?clouds=debug — сплошной розовый экран, ?clouds=depth — карта глубины (серое — платформы, зелёное — пусто)
+  if (uDebug > 0.5 && uDebug < 1.5) { gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }
+  if (uDebug > 1.5) { gl_FragColor = dep < 0.99999 ? vec4(vec3(clamp(vz / 60.0, 0.0, 1.0)), 1.0) : vec4(0.0, 0.35, 0.0, 1.0); return; }
   vec3 rd = normalize(vRay);
   vec3 ro = uCamPos;
 
@@ -243,12 +248,7 @@ void main() {
   }
   // Платформа (или игрок) на пути луча: дальше неё облако не рисуем. Глубина лежит в разрешении игры без сглаживания,
   // поэтому край платформы совпадает с пикселями основного кадра.
-  float dep = texture(uDepth, vUv).r;
-  if (dep < 0.99999) {
-    float zn = dep * 2.0 - 1.0;
-    float vz = 2.0 * uNearFar.x * uNearFar.y / (uNearFar.y + uNearFar.x - zn * (uNearFar.y - uNearFar.x));
-    t1 = min(t1, vz / max(dot(rd, uCamFwd), 1e-3));
-  }
+  if (uUseDepth > 0.5 && dep < 0.99999) t1 = min(t1, vz / max(dot(rd, uCamFwd), 1e-3));
   if (t1 <= t0) discard;
 
   float cosT = dot(rd, uSunDir);
@@ -312,7 +312,10 @@ const STUB = { objects: [], setLook: NOOP, setBands: NOOP, setWeather: NOOP, set
 
 export function createClouds(scene, opts = {}) {
   const high = opts.high ?? (opts.count == null ? true : opts.count >= 30);
-  const debug = typeof location !== 'undefined' && /[?&]clouds=debug/.test(location.search);
+  // Диагностика: ?clouds=debug (розовый экран), ?clouds=depth (карта глубины), ?clouds=nodepth (без учёта платформ), ?clouds=quiet (скрыть панель)
+  const qmode = (typeof location !== 'undefined' && /[?&]clouds=(\w+)/.exec(location.search) || [])[1] || '';
+  const debug = qmode === 'debug' ? 1 : qmode === 'depth' ? 2 : 0;
+  const SHOW_INFO = qmode !== 'quiet'; // когда всё заработает, поставьте false
   const occH = opts.occHeight || 240;                 // строк у основного кадра игры (RES_H в main.js)
   let cloudH = opts.height || (high ? 480 : 360);     // строк у полотна облаков
   const maxDist = opts.maxDist || (high ? 900 : 600); // дальность облаков, м
@@ -338,7 +341,7 @@ export function createClouds(scene, opts = {}) {
     fragmentShader: fragSrc(high),
     uniforms: {
       uNoise: { value: makeNoise3D(32) }, uDepth: { value: null },
-      uTime: { value: 0 }, uDebug: { value: debug ? 1 : 0 }, uRain: { value: 0 }, uMidK: { value: 1 }, uMaxDist: { value: maxDist }, uTubeOn: { value: 0 },
+      uTime: { value: 0 }, uDebug: { value: debug }, uUseDepth: { value: qmode === 'nodepth' ? 0 : 1 }, uRain: { value: 0 }, uMidK: { value: 1 }, uMaxDist: { value: maxDist }, uTubeOn: { value: 0 },
       uWind: { value: new THREE.Vector2() }, uFogRange: { value: new THREE.Vector2(24, 150) },
       uNearFar: { value: new THREE.Vector2(0.1, 250) }, uHull: { value: new THREE.Vector2(-30, 80) },
       uTan: { value: new THREE.Vector2(1, 1) }, uCamRot: { value: new THREE.Matrix3() },
@@ -407,6 +410,67 @@ export function createClouds(scene, opts = {}) {
     mat.uniformsNeedUpdate = true;
   };
 
+  // ── Отрисовка: сама, из update() ─────────────────────────────
+  let cam = null, frames = 0, tick = 0, occN = 0, hits = '—', errText = '', errCount = 0, glErr = 0;
+  let info = null;
+  if (SHOW_INFO) {
+    info = document.createElement('pre');
+    info.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:99998;background:rgba(0,0,0,.78);color:#7dff9a;font:11px/1.35 monospace;padding:6px 8px;pointer-events:none;white-space:pre-wrap;max-width:62vw';
+    document.body.append(info);
+  }
+  // Всё непрозрачное в сцене закрывает облака (платформы, лифты, игрок, монеты). Метки обновляются раз в 10 кадров.
+  function syncOccluders() {
+    let n = 0;
+    scene.traverse((o) => {
+      if (!o.isMesh || o.isInstancedMesh) return;
+      const m = o.material;
+      const solid = m && !Array.isArray(m) && !m.transparent && !m.wireframe && m.visible !== false && !m.isShaderMaterial;
+      if (solid) { o.layers.enable(OCC_LAYER); n++; } else if (o.layers.isEnabled(OCC_LAYER)) o.layers.disable(OCC_LAYER);
+    });
+    occN = n;
+  }
+  function renderNow() {
+    if (!cam) cam = opts.camera || scene.children.find((o) => o.isCamera) || null;
+    if (!cam || !rt || errCount > 3) return;
+    try {
+      if (tick++ % 10 === 0) syncOccluders();
+      cam.updateWorldMatrix(true, false);
+      const bg = scene.background, om = scene.overrideMaterial, mask = cam.layers.mask;
+      scene.background = null; scene.overrideMaterial = occMat; cam.layers.set(OCC_LAYER);
+      try {
+        renderer.setRenderTarget(rt);
+        renderer.render(scene, cam);
+      } finally {
+        renderer.setRenderTarget(null);
+        scene.background = bg; scene.overrideMaterial = om; cam.layers.mask = mask;
+      }
+      renderer.render(cloudScene, cam);
+      frames++;
+      if (info && frames % 20 === 0) { // раз в треть секунды: проверяем, нарисовалось ли что-нибудь на полотне облаков
+        const gl = renderer.getContext(), px = new Uint8Array(4), w = cv.width, h = cv.height;
+        let hit = 0, tot = 0;
+        for (let iy = 1; iy <= 3; iy++) for (let ix = 1; ix <= 5; ix++) {
+          gl.readPixels(Math.floor((w * ix) / 6), Math.floor((h * iy) / 4), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+          tot++; if (px[3] > 8) hit++;
+        }
+        hits = hit + '/' + tot; glErr = gl.getError();
+      }
+    } catch (e) {
+      errCount++; errText = String((e && e.stack) || e).slice(0, 700);
+      console.error('[clouds] ошибка отрисовки:', e);
+    }
+    if (info && frames % 20 === 0 || errText) {
+      const ow = rt.width, oh = rt.height;
+      info.style.color = errText ? '#ff8080' : '#7dff9a';
+      info.textContent = 'Облака: ' + (errText ? 'ОШИБКА\n' + errText : 'работают')
+        + '\nкадров: ' + frames + ' | полотно ' + cv.width + '×' + cv.height + ' | глубина ' + ow + '×' + oh
+        + '\nзакрывающих объектов: ' + occN + ' | шейдеров: ' + (renderer.info.programs ? renderer.info.programs.length : '?') + ' | GL: ' + (glErr || 'ok')
+        + '\nточек с облаками на полотне: ' + hits + ' (0 — облаков в кадре нет)'
+        + '\ncamera far=' + (cam.far | 0) + ' fov=' + (cam.fov | 0) + ' | дождь ' + rainS.toFixed(2) + ' | uHull ' + u.uHull.value.x.toFixed(0) + '…' + u.uHull.value.y.toFixed(0)
+        + '\n?clouds=depth — карта глубины, ?clouds=debug — розовый экран, ?clouds=nodepth — без глубины, ?clouds=quiet — скрыть панель';
+    }
+  }
+
   return {
     objects: [], // облака рисуются отдельным полотном, в сцене игры их нет: прятать при SSAO/SSR не нужно
 
@@ -459,22 +523,10 @@ export function createClouds(scene, opts = {}) {
       }
       u.uLit.value.copy(lit).multiply(sunTint).multiplyScalar(1.12);
       u.uShade.value.copy(shade);
+      renderNow();
     },
 
-    // Вызывать каждый кадр ПОСЛЕ отрисовки игры. 1) карта глубины платформ (только то, что помечено markOccluder),
-    // 2) облака на своём полотне: луч останавливается на платформе.
-    render(camera) {
-      if (!rt) return;
-      const bg = scene.background, om = scene.overrideMaterial, mask = camera.layers.mask;
-      scene.background = null; scene.overrideMaterial = occMat; camera.layers.set(OCC_LAYER);
-      try {
-        renderer.setRenderTarget(rt);
-        renderer.render(scene, camera);
-      } finally {
-        renderer.setRenderTarget(null);
-        scene.background = bg; scene.overrideMaterial = om; camera.layers.mask = mask;
-      }
-      renderer.render(cloudScene, camera);
-    },
+    // Облака теперь рисуются сами, в конце update() (main.js вызывает его каждый кадр). Метод оставлен для совместимости.
+    render() {},
   };
 }
