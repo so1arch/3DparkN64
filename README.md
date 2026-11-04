@@ -1,6 +1,6 @@
 # N64 Parkour
 
-Браузерный 3D-паркур в стиле Nintendo 64 (three.js + Vite).
+Браузерный 3D-паркур в стиле Nintendo 64 (three.js + Vite). 
 
 ## Что в игре
 
