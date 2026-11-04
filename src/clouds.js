@@ -104,7 +104,8 @@ function fragSrc(high) {
 #define SIGMA 0.45
 
 uniform sampler3D uNoise;
-uniform float uTime, uRain, uMidK, uMaxDist, uTubeOn;
+precision highp sampler3D;
+uniform float uTime, uRain, uMidK, uMaxDist, uTubeOn, uDebug;
 uniform vec2 uWind, uFogRange, uNearFar, uHull;
 uniform vec3 uCamPos, uCamFwd, uFocus, uLit, uShade, uGlow, uSunDir, uFogColor, uBand0, uBand1, uBand2;
 varying vec3 vRay;
@@ -198,13 +199,17 @@ float clearF(vec3 p) {
 
 float hg(float c, float g) { float g2 = g * g; return (1.0 - g2) / pow(1.0 + g2 - 2.0 * g * c, 1.5); }
 float ign(vec2 fc) { return fract(52.9829189 * fract(dot(fc, vec2(0.06711056, 0.00583715)))); }
+// Матрица Bayer 4x4 без массива: два вложенных Bayer 2x2 (значение 2x+3y по модулю 4)
 float bayer4(vec2 fc) {
-  const float M[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
-  int x = int(mod(fc.x, 4.0)), y = int(mod(fc.y, 4.0));
-  return (M[y * 4 + x] + 0.5) / 16.0;
+  vec2 p = mod(floor(fc), 4.0);
+  float lo = mod(2.0 * mod(p.x, 2.0) + 3.0 * mod(p.y, 2.0), 4.0);
+  float hi = mod(2.0 * floor(p.x * 0.5) + 3.0 * floor(p.y * 0.5), 4.0);
+  return (4.0 * lo + hi + 0.5) / 16.0;
 }
 
 void main() {
+  // Проверка тракта отрисовки (адрес игры с ?clouds=debug): сплошной розовый экран поверх неба, но под платформами
+  if (uDebug > 0.5) { gl_FragDepth = 0.999999; gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }
   vec3 rd = normalize(vRay);
   vec3 ro = uCamPos;
 
@@ -280,6 +285,7 @@ void main() {
 
 export function createClouds(scene, opts = {}) {
   const high = opts.high ?? (opts.count == null ? true : opts.count >= 30);
+  const debug = typeof location !== 'undefined' && /[?&]clouds=debug/.test(location.search);
   let light = opts.light || null; // направленный свет (солнце/луна); если не передан, берём первый DirectionalLight сцены
 
   const mat = new THREE.ShaderMaterial({
@@ -287,7 +293,7 @@ export function createClouds(scene, opts = {}) {
     fragmentShader: fragSrc(high),
     uniforms: {
       uNoise: { value: makeNoise3D(32) },
-      uTime: { value: 0 }, uRain: { value: 0 }, uMidK: { value: 1 }, uMaxDist: { value: 200 }, uTubeOn: { value: 0 },
+      uTime: { value: 0 }, uDebug: { value: debug ? 1 : 0 }, uRain: { value: 0 }, uMidK: { value: 1 }, uMaxDist: { value: 200 }, uTubeOn: { value: 0 },
       uWind: { value: new THREE.Vector2() }, uFogRange: { value: new THREE.Vector2(24, 150) },
       uNearFar: { value: new THREE.Vector2(0.1, 250) }, uHull: { value: new THREE.Vector2(-30, 80) },
       uTan: { value: new THREE.Vector2(1, 1) }, uCamRot: { value: new THREE.Matrix3() },
@@ -314,7 +320,19 @@ export function createClouds(scene, opts = {}) {
   const sunTint = new THREE.Color(1, 1, 1), WARM = new THREE.Color(1, 0.93, 0.8);
 
   // Параметры камеры и тумана берём в момент отрисовки: сцену рисуют несколько проходов, и камера у всех одна, но дальность и туман меняются
+  let hooked = false;
   mesh.onBeforeRender = (renderer, scn, camera) => {
+    if (!hooked) { // если шейдер не соберётся, текст ошибки появится на экране (и в консоли), а не пропадёт молча
+      hooked = true;
+      if (!renderer.debug.onShaderError) renderer.debug.onShaderError = (gl, program, vs, fs) => {
+        const log = [gl.getProgramInfoLog(program), gl.getShaderInfoLog(vs), gl.getShaderInfoLog(fs)].filter(Boolean).join('\n').trim();
+        console.error('[clouds] ошибка шейдера:\n' + log);
+        const el = document.createElement('pre');
+        el.style.cssText = 'position:fixed;left:8px;right:8px;top:90px;max-height:50vh;overflow:auto;z-index:99999;background:rgba(120,0,0,.93);color:#fff;font:11px/1.3 monospace;padding:8px;white-space:pre-wrap;pointer-events:none';
+        el.textContent = 'Ошибка шейдера (облака):\n' + log.slice(0, 3000);
+        document.body.append(el);
+      };
+    }
     u.uCamPos.value.setFromMatrixPosition(camera.matrixWorld);
     u.uCamRot.value.setFromMatrix4(camera.matrixWorld);
     camera.getWorldDirection(u.uCamFwd.value);
