@@ -27,17 +27,18 @@ const $ = (id) => document.getElementById(id);
 const ents = createObjects(); // интерактивные объекты: лестницы, батуты, ускорители, шипы, лифты
 
 // ── Настройки графики: HIGH + безлимитный FPS по умолчанию ─────
-// FPS_CAP: -1 — по частоте монитора (VSync, плавно) и счётчик показывает ещё и «макс.» — сколько кадров игра может выдать;
-//          0 — UNLOCK (кадры рисуются без ожидания монитора: счётчик огромный, но картинка рывками); 30 / 60 — ограничение
-let QUALITY = 'high', FPS_CAP = -1, TIME = 'day', WEATHER = 'clear', SHOW_FPS = false;
+let QUALITY = 'high', FPS_CAP = 0, TIME = 'day', WEATHER = 'clear', SHOW_FPS = false;
+// Разрешение рендера (число строк по вертикали). 240 — стандартное для игры (стиль N64), 0 — родное разрешение окна.
+const RES_LIST = [240, 360, 480, 720, 1080, 0];
+let RES_SET = 240;
 // Отражения SSR (только при графике HIGH): on — включены, op — сила 0..1, dist — дальность поиска отражения в метрах,
 // blur — сглаживание, player — отражения на персонаже. Меняются в Настройки → «Отражения SSR».
 const SSR = { on: true, op: 0.6, dist: 30, blur: true, player: true };
 try {
   const q = JSON.parse(localStorage.getItem('n64parkour.v1') || '{}');
   if (q.quality === 'light') QUALITY = 'light';
-  // Старые сохранения со значением 0 (прежний «Максимум») один раз переводим на плавный режим: Unlock даёт рывки
-  if ([0, -1, 30, 60].includes(q.fps)) FPS_CAP = q.fps === 0 && (q.fpsVer | 0) < 2 ? -1 : q.fps;
+  if ([0, 30, 60].includes(q.fps)) FPS_CAP = q.fps;
+  if (RES_LIST.includes(q.res)) RES_SET = q.res;
   if (q.showFps === true) SHOW_FPS = true;
   if (q.time === 'night') TIME = 'night';
   if (q.weather === 'rain') WEATHER = 'rain';
@@ -53,8 +54,9 @@ try {
 const HIGH = QUALITY === 'high';
 
 // ── Рендер ─────────────────────────────────────────────────────
-const RES_H = 240;
-const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+let RES_H = RES_SET || 240; // реальное число строк кадра; пересчитывается в resize()
+let cloudsApi = null;       // облака создаются ниже; resize() сообщает им размер кадра, когда они уже есть
+const renderer = new THREE.WebGLRenderer({ antialias: false });
 renderer.setPixelRatio(1);
 $('game').appendChild(renderer.domElement);
 
@@ -150,11 +152,16 @@ if (ssr) {
   ssr.renderMetalness = withFxHidden(ssr.renderMetalness.bind(ssr));
 }
 
+// Размер кадра: RES_SET строк по вертикали (0 — как у окна, но не больше 2160). Ширина считается по пропорциям окна.
+// До 360 строк картинку растягивает браузер «по пикселям» (как на N64), выше — со сглаживанием, чтобы не было неровных пикселей.
 function resize() {
+  RES_H = RES_SET || Math.max(240, Math.min(2160, Math.round(innerHeight)));
   const w = Math.round(RES_H * innerWidth / innerHeight);
   renderer.setSize(w, RES_H, false);
+  renderer.domElement.style.imageRendering = RES_H <= 360 ? 'pixelated' : 'auto';
   if (composer) composer.setSize(w, RES_H);
   camera.aspect = w / RES_H; camera.updateProjectionMatrix();
+  if (cloudsApi) cloudsApi.setOccHeight(RES_H); // карта глубины облаков должна быть того же размера, что и кадр игры
 }
 addEventListener('resize', resize); resize();
 
@@ -164,6 +171,10 @@ const box = (parent, w, h, d, m, x, y, z) => {
   o.position.set(x, y, z); parent.add(o); return o;
 };
 const clouds = createClouds(scene, HIGH ? { count: 36, puffs: 7 } : { count: 20, puffs: 5 });
+cloudsApi = clouds;
+// Облака рисуются отдельным холстом со своей автоподстройкой разрешения. Потолок их чёткости поднимаем вместе с разрешением игры.
+function applyCloudRes() { clouds.setOccHeight(RES_H); clouds.setResolution(Math.max(HIGH ? 480 : 360, RES_H)); }
+applyCloudRes();
 const rain = createRain(scene, { high: HIGH });
 const trail = createTrail(scene); // нить ветра: след прошлого прохождения
 const gulls = createGulls(scene, { high: HIGH });
@@ -287,7 +298,7 @@ function setShine(m, rough, metal) {
 const SAVE_KEY = 'n64parkour.v1';
 const AUDIO_VER = 2; // 2: громкость эффектов по умолчанию снижена с 80 % до 50 %
 const MUSIC_AUTO = 11, MUSIC_VER = 2; // 11 — «Авто (по времени и погоде)»; версия 2: Авто стало мелодией по умолчанию
-let save = { best:{}, skin:null, quality:QUALITY, fps:FPS_CAP, fpsVer:2, showFps:SHOW_FPS, musicPreset:MUSIC_AUTO, musicVer:MUSIC_VER, audio:null, audioVer:AUDIO_VER, time:TIME, weather:WEATHER, ssr:SSR };
+let save = { best:{}, skin:null, quality:QUALITY, fps:FPS_CAP, res:RES_SET, showFps:SHOW_FPS, musicPreset:MUSIC_AUTO, musicVer:MUSIC_VER, audio:null, audioVer:AUDIO_VER, time:TIME, weather:WEATHER, ssr:SSR };
 let musicPreset = MUSIC_AUTO;
 try {
   const s = JSON.parse(localStorage.getItem(SAVE_KEY) || '{}');
@@ -1119,14 +1130,27 @@ for(const[k,n]of Object.entries(DIFFS))$('seedDiff').add(new Option(n,k));
 THEMES.forEach((t,i)=>$('edtheme').add(new Option(t.name,i)));
 $('seedDiff').value=2;
 $('qualitySel').value=QUALITY;
-// Лимит FPS: Unlock (без лимита) / по частоте монитора / 60 / 30. Список собираем здесь, поэтому index.html менять не нужно.
+$('fpsSel').value=String(FPS_CAP);
+$('fpsSel').onchange=(e)=>{FPS_CAP=+e.target.value;save.fps=FPS_CAP;persist();e.target.blur();};
+// Разрешение рендера (Настройки → «Графика и окружение», сразу после FPS). По умолчанию 240p, как задумано в игре.
+// Меняется на лету, без перезагрузки; чем выше разрешение, тем чётче картинка и тем ниже FPS.
 {
-  const fs=$('fpsSel');
-  fs.textContent='';
-  [['Монитор (плавно) + макс. FPS',-1],['Unlock (рывки, для теста)',0],['60 FPS',60],['30 FPS',30]].forEach(([n,val])=>fs.add(new Option(n,val)));
-  fs.value=String(FPS_CAP);
+  const row=document.createElement('div');row.className='row';row.append('Разрешение: ');
+  const sel=document.createElement('select');sel.id='resSel';sel.title='Сколько строк по вертикали рисует игра';
+  for(const h of RES_LIST)sel.add(new Option(h===0?'Родное (как окно)':h===240?'240p (стандарт)':h+'p',String(h)));
+  sel.value=String(RES_SET);
+  sel.onchange=(e)=>{
+    RES_SET=+e.target.value;save.res=RES_SET;persist();
+    resize();applyCloudRes();
+    toast(`Разрешение: ${renderer.domElement.width}×${renderer.domElement.height}`);
+    e.target.blur();
+  };
+  row.append(sel);
+  const note=document.createElement('div');note.className='snote';
+  note.style.cssText='font-size:11px;text-align:center;';
+  note.textContent='Стандарт — 240p: пиксельный вид N64. Выше — чётче, но FPS ниже (включите «Счётчик FPS» ниже).';
+  $('fpsSel').closest('.row').after(row,note);
 }
-$('fpsSel').onchange=(e)=>{FPS_CAP=+e.target.value;save.fps=FPS_CAP;persist();fpsN=0;fpsT=0;potN=0;potT=0;potFps=0;e.target.blur();};
 $('qualitySel').onchange=(e)=>{save.quality=e.target.value;persist();if(save.quality===QUALITY)return;if(mode==='edit'&&!confirm('Страница перезагрузится. Уровень сохранится в ссылке. Продолжить?')){e.target.value=QUALITY;save.quality=QUALITY;persist();return;}location.hash=L.id==='classic'?'':L.seed?`S=${encodeURIComponent(L.seed)}&T=${L.style||'mix'}&D=${L.diff||2}&N=${L.len||'std'}`:`L=${enc(L)}`;location.reload();};
 SKINS.forEach((sk,i)=>$('skinSel').add(new Option(sk.name,i)));
 $('skinSel').add(new Option('Свои цвета','custom'));
@@ -1256,37 +1280,21 @@ function updateSSR(){
 
 // ── Счётчик FPS ───────────────────────────────────────────────
 // Считается по реально отрисованным кадрам (после ограничителя FPS) и обновляется дважды в секунду.
-// В режиме Unlock это сколько кадров в секунду игра способна нарисовать, а не частота монитора.
 const fpsEl=$('fps');
 let fpsN=0,fpsT=0;
-// «Макс. FPS» в плавных режимах: раз в 8 кадров ждём конца работы видеокарты (gl.finish) и меряем, сколько заняла вся работа кадра.
-// 1000 / среднее время кадра = сколько кадров игра могла бы рисовать в секунду. Само отображение при этом остаётся плавным.
-let potN=0,potT=0,potFps=0,frameNo=0;
-function applyFpsShow(){fpsEl.style.display=SHOW_FPS?'block':'none';fpsEl.textContent='';fpsN=0;fpsT=0;potN=0;potT=0;potFps=0;}
+function applyFpsShow(){fpsEl.style.display=SHOW_FPS?'block':'none';fpsEl.textContent='';fpsN=0;fpsT=0;}
 $('fpsShowSel').value=SHOW_FPS?'1':'0';
 $('fpsShowSel').onchange=(e)=>{SHOW_FPS=e.target.value==='1';save.showFps=SHOW_FPS;persist();applyFpsShow();e.target.blur();};
 applyFpsShow();
 
 // ── Главный цикл ──────────────────────────────────────────────
-// requestAnimationFrame привязан к частоте монитора, и это даёт ровную картинку. В режиме Unlock (FPS_CAP = 0)
-// следующий кадр запускается через MessageChannel без ожидания монитора: игра рисует кадры, сколько успеет, но монитор
-// показывает лишь часть из них, поэтому счётчик огромный, а картинка идёт рывками. Остальные режимы идут через
-// requestAnimationFrame. Если вкладка скрыта, всегда используется requestAnimationFrame: он там паузится, и процессор не греется впустую.
 const clock=new THREE.Clock();
-let frameAcc=0,audioAcc=0;
-const loopChan=typeof MessageChannel!=='undefined'?new MessageChannel():null;
-if(loopChan)loopChan.port1.onmessage=()=>loop();
-function nextFrame(){
-  if(FPS_CAP===0&&!document.hidden){
-    if(loopChan)loopChan.port2.postMessage(0);else setTimeout(loop,0);
-  }else requestAnimationFrame(loop);
-}
+let frameAcc=0;
 function loop(){
-  nextFrame();
+  requestAnimationFrame(loop);
   frameAcc+=clock.getDelta();
-  if(FPS_CAP>0&&frameAcc<(1/FPS_CAP)*0.9)return;
-  const t0=SHOW_FPS?performance.now():0;
-  if(SHOW_FPS){fpsN++;fpsT+=frameAcc;if(fpsT>=0.5){fpsEl.textContent=Math.round(fpsN/fpsT)+' FPS'+(FPS_CAP!==0&&potFps?' · макс '+potFps:'');fpsN=0;fpsT=0;}}
+  if(FPS_CAP&&frameAcc<(1/FPS_CAP)*0.9)return;
+  if(SHOW_FPS){fpsN++;fpsT+=frameAcc;if(fpsT>=0.5){fpsEl.textContent=Math.round(fpsN/fpsT)+' FPS';fpsN=0;fpsT=0;}}
   const dt=Math.min(frameAcc,0.05); frameAcc=0; clockT+=dt;
   pad=input.poll(dt,{menuOpen});
   padActions();
@@ -1300,12 +1308,7 @@ function loop(){
   updateEnv(dt);
   gulls.update(dt,clockT,p,mode==='play'?env.ns:0,camera.position); // чайки-фонарики: только ночью и в игре
   rain.update(dt,p,parts,mode==='play'?env.ws:0,env.ns); // в редакторе камера далеко, дождь там не рисуем (платформы при этом мокрые)
-  // Звук обновляем не чаще ~30 раз в секунду: при сотнях FPS это сотни лишних изменений параметров Web Audio в секунду
-  audioAcc+=dt;
-  if(audioAcc>=1/30){
-    audio.update(audioAcc,{level:menuOpen?0.45:(mode==='edit'?0.7:1),height:mode==='play'?p.y:camera.position.y,speed:live?Math.hypot(v.x,v.z):0,fall:live?Math.max(0,-v.y):0,rain:env.ws,night:env.ns});
-    audioAcc=0;
-  }
+  audio.update(dt,{level:menuOpen?0.45:(mode==='edit'?0.7:1),height:mode==='play'?p.y:camera.position.y,speed:live?Math.hypot(v.x,v.z):0,fall:live?Math.max(0,-v.y):0,rain:env.ws,night:env.ns});
   clouds.update(dt,clockT,camera.position);
   trail.update(menuOpen?0:dt,clockT,mode==='play',p,1-env.ns); // нить: днём ярче, ночью прежняя
   if(composer){
@@ -1315,11 +1318,6 @@ function loop(){
     if(useSSR)updateSSR();
     composer.render();
   }else renderer.render(scene,camera);
-  if(SHOW_FPS&&FPS_CAP!==0&&(++frameNo&7)===0){
-    renderer.getContext().finish();
-    potT+=performance.now()-t0;potN++;
-    if(potN>=8){potFps=Math.min(9999,Math.round(1000*potN/Math.max(potT,0.001)));potN=0;potT=0;}
-  }
 }
 
 // Время суток и погода
