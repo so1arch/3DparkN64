@@ -27,6 +27,7 @@ const $ = (id) => document.getElementById(id);
 const ents = createObjects(); // интерактивные объекты: лестницы, батуты, ускорители, шипы, лифты
 
 // ── Настройки графики: HIGH + безлимитный FPS по умолчанию ─────
+// FPS_CAP: 0 — UNLOCK (без лимита, цикл не привязан к частоте монитора), -1 — по частоте монитора (VSync), 30 / 60 — ограничение
 let QUALITY = 'high', FPS_CAP = 0, TIME = 'day', WEATHER = 'clear', SHOW_FPS = false;
 // Отражения SSR (только при графике HIGH): on — включены, op — сила 0..1, dist — дальность поиска отражения в метрах,
 // blur — сглаживание, player — отражения на персонаже. Меняются в Настройки → «Отражения SSR».
@@ -34,7 +35,7 @@ const SSR = { on: true, op: 0.6, dist: 30, blur: true, player: true };
 try {
   const q = JSON.parse(localStorage.getItem('n64parkour.v1') || '{}');
   if (q.quality === 'light') QUALITY = 'light';
-  if ([0, 30, 60].includes(q.fps)) FPS_CAP = q.fps;
+  if ([0, -1, 30, 60].includes(q.fps)) FPS_CAP = q.fps;
   if (q.showFps === true) SHOW_FPS = true;
   if (q.time === 'night') TIME = 'night';
   if (q.weather === 'rain') WEATHER = 'rain';
@@ -51,7 +52,7 @@ const HIGH = QUALITY === 'high';
 
 // ── Рендер ─────────────────────────────────────────────────────
 const RES_H = 240;
-const renderer = new THREE.WebGLRenderer({ antialias: false });
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
 renderer.setPixelRatio(1);
 $('game').appendChild(renderer.domElement);
 
@@ -1116,8 +1117,14 @@ for(const[k,n]of Object.entries(DIFFS))$('seedDiff').add(new Option(n,k));
 THEMES.forEach((t,i)=>$('edtheme').add(new Option(t.name,i)));
 $('seedDiff').value=2;
 $('qualitySel').value=QUALITY;
-$('fpsSel').value=String(FPS_CAP);
-$('fpsSel').onchange=(e)=>{FPS_CAP=+e.target.value;save.fps=FPS_CAP;persist();e.target.blur();};
+// Лимит FPS: Unlock (без лимита) / по частоте монитора / 60 / 30. Список собираем здесь, поэтому index.html менять не нужно.
+{
+  const fs=$('fpsSel');
+  fs.textContent='';
+  [['Unlock (без лимита)',0],['Монитор (VSync)',-1],['60 FPS',60],['30 FPS',30]].forEach(([n,val])=>fs.add(new Option(n,val)));
+  fs.value=String(FPS_CAP);
+}
+$('fpsSel').onchange=(e)=>{FPS_CAP=+e.target.value;save.fps=FPS_CAP;persist();fpsN=0;fpsT=0;e.target.blur();};
 $('qualitySel').onchange=(e)=>{save.quality=e.target.value;persist();if(save.quality===QUALITY)return;if(mode==='edit'&&!confirm('Страница перезагрузится. Уровень сохранится в ссылке. Продолжить?')){e.target.value=QUALITY;save.quality=QUALITY;persist();return;}location.hash=L.id==='classic'?'':L.seed?`S=${encodeURIComponent(L.seed)}&T=${L.style||'mix'}&D=${L.diff||2}&N=${L.len||'std'}`:`L=${enc(L)}`;location.reload();};
 SKINS.forEach((sk,i)=>$('skinSel').add(new Option(sk.name,i)));
 $('skinSel').add(new Option('Свои цвета','custom'));
@@ -1247,6 +1254,7 @@ function updateSSR(){
 
 // ── Счётчик FPS ───────────────────────────────────────────────
 // Считается по реально отрисованным кадрам (после ограничителя FPS) и обновляется дважды в секунду.
+// В режиме Unlock это сколько кадров в секунду игра способна нарисовать, а не частота монитора.
 const fpsEl=$('fps');
 let fpsN=0,fpsT=0;
 function applyFpsShow(){fpsEl.style.display=SHOW_FPS?'block':'none';fpsEl.textContent='';fpsN=0;fpsT=0;}
@@ -1255,12 +1263,23 @@ $('fpsShowSel').onchange=(e)=>{SHOW_FPS=e.target.value==='1';save.showFps=SHOW_F
 applyFpsShow();
 
 // ── Главный цикл ──────────────────────────────────────────────
+// requestAnimationFrame всегда привязан к частоте монитора (у вас 75 Гц), поэтому в режиме Unlock (FPS_CAP = 0)
+// следующий кадр запускается через MessageChannel: он срабатывает сразу, без ожидания вертикальной синхронизации.
+// Так игра рисует кадры так быстро, как позволяют процессор и видеокарта. Остальные режимы (VSync, 60, 30) идут через
+// requestAnimationFrame. Если вкладка скрыта, всегда используется requestAnimationFrame: он там паузится, и процессор не греется впустую.
 const clock=new THREE.Clock();
-let frameAcc=0;
+let frameAcc=0,audioAcc=0;
+const loopChan=typeof MessageChannel!=='undefined'?new MessageChannel():null;
+if(loopChan)loopChan.port1.onmessage=()=>loop();
+function nextFrame(){
+  if(FPS_CAP===0&&!document.hidden){
+    if(loopChan)loopChan.port2.postMessage(0);else setTimeout(loop,0);
+  }else requestAnimationFrame(loop);
+}
 function loop(){
-  requestAnimationFrame(loop);
+  nextFrame();
   frameAcc+=clock.getDelta();
-  if(FPS_CAP&&frameAcc<(1/FPS_CAP)*0.9)return;
+  if(FPS_CAP>0&&frameAcc<(1/FPS_CAP)*0.9)return;
   if(SHOW_FPS){fpsN++;fpsT+=frameAcc;if(fpsT>=0.5){fpsEl.textContent=Math.round(fpsN/fpsT)+' FPS';fpsN=0;fpsT=0;}}
   const dt=Math.min(frameAcc,0.05); frameAcc=0; clockT+=dt;
   pad=input.poll(dt,{menuOpen});
@@ -1275,7 +1294,12 @@ function loop(){
   updateEnv(dt);
   gulls.update(dt,clockT,p,mode==='play'?env.ns:0,camera.position); // чайки-фонарики: только ночью и в игре
   rain.update(dt,p,parts,mode==='play'?env.ws:0,env.ns); // в редакторе камера далеко, дождь там не рисуем (платформы при этом мокрые)
-  audio.update(dt,{level:menuOpen?0.45:(mode==='edit'?0.7:1),height:mode==='play'?p.y:camera.position.y,speed:live?Math.hypot(v.x,v.z):0,fall:live?Math.max(0,-v.y):0,rain:env.ws,night:env.ns});
+  // Звук обновляем не чаще ~30 раз в секунду: при сотнях FPS это сотни лишних изменений параметров Web Audio в секунду
+  audioAcc+=dt;
+  if(audioAcc>=1/30){
+    audio.update(audioAcc,{level:menuOpen?0.45:(mode==='edit'?0.7:1),height:mode==='play'?p.y:camera.position.y,speed:live?Math.hypot(v.x,v.z):0,fall:live?Math.max(0,-v.y):0,rain:env.ws,night:env.ns});
+    audioAcc=0;
+  }
   clouds.update(dt,clockT,camera.position);
   trail.update(menuOpen?0:dt,clockT,mode==='play',p,1-env.ns); // нить: днём ярче, ночью прежняя
   if(composer){
