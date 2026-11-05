@@ -7,8 +7,9 @@
 //   • Параметры облаков считает процессор, а не видеокарта. Мир разбит на ячейки, в каждой живёт одно облако.
 //     Раз в 0.1 с процессор пересчитывает облака вокруг камеры (16x16 ячеек на слой) и кладёт в три маленькие
 //     текстуры. Видеокарта на каждом шаге луча только читает 4 ячейки из текстуры, без хешей и тригонометрии.
-//   • Автоподстройка разрешения. Холст облаков сам уменьшается, если FPS падает ниже ~48, и осторожно растёт обратно,
-//     когда запас есть. «Чёткость облаков» в настройках задаёт потолок.
+//   • Разрешение облаков привязано к разрешению игры (настройка «Разрешение»): холст в 1.5 раза чётче кадра игры,
+//     от 360 до 1080 строк. Старая автоподстройка по FPS (холст сам уменьшался до 144 строк, из-за чего облака
+//     становились очень пиксельными) включается только адресом ?clouds=auto.
 //   • Дешёвый свет. Три-четыре пробы к солнцу, фаза рассеяния считается один раз на луч, вдали мелкая лепка и свет
 //     для почти прозрачных точек пропускаются, шаги луча растут с расстоянием.
 //   • В меню облака обновляются в четверть частоты кадров (под полупрозрачным меню этого не видно).
@@ -22,7 +23,7 @@
 //   markOccluder(obj) — пометить объект как «закрывающий облака» (необязательно: непрозрачные меши находятся сами).
 //
 // Адрес игры с параметрами: ?clouds=info (панель состояния), ?clouds=debug (розовый экран), ?clouds=depth (карта глубины),
-// ?clouds=nodepth (без учёта платформ), ?clouds=fixed (без автоподстройки разрешения).
+// ?clouds=nodepth (без учёта платформ), ?clouds=auto (старая автоподстройка разрешения облаков по FPS).
 
 import * as THREE from 'three';
 
@@ -312,10 +313,15 @@ export function createClouds(scene, opts = {}) {
   const SHOW_INFO = qmode === 'info';
   let occH = opts.occHeight || 240;                   // строк у основного кадра игры (RES_H в main.js); меняется через setOccHeight()
   const maxDist = opts.maxDist || (high ? 800 : 550); // дальность облаков, м
-  const auto = opts.auto !== false && qmode !== 'fixed';
-  let capLvl = levelOf(opts.height || (high ? 480 : 360));  // потолок разрешения: выбор игрока в настройках
+  // По умолчанию разрешение облаков привязано к разрешению игры (см. linkedH) и не меняется само.
+  // Старая автоподстройка по FPS включается адресом ?clouds=auto
+  const auto = opts.auto !== false && qmode === 'auto';
+  let capLvl = levelOf(opts.height || (high ? 480 : 360));  // потолок разрешения (только для автоподстройки)
   let lvl = auto ? Math.min(capLvl, 3) : capLvl;            // автоподстройка стартует с 270 строк
-  let cloudH = LEVELS[lvl];
+  // Привязка к игре: облака рисуются в 1.5 раза чётче кадра игры, но не меньше 360 и не больше 1080 строк
+  // (240p -> 360, 360p -> 540, 480p -> 720, 720p и выше -> 1080)
+  const linkedH = () => clamp(Math.round(occH * 1.5), 360, 1080);
+  let cloudH = auto ? LEVELS[lvl] : linkedH();
   let light = opts.light || null;                     // направленный свет (солнце/луна); если не передан, берём первый DirectionalLight сцены
 
   // Своё полотно и свой рендерер: у облаков разрешение выше, чем у игры
@@ -524,11 +530,11 @@ export function createClouds(scene, opts = {}) {
     if (info && (frames % 20 === 0 || errText)) {
       info.style.color = errText ? '#ff8080' : '#7dff9a';
       info.textContent = 'Облака: ' + (errText ? 'ОШИБКА\n' + errText : 'работают')
-        + '\nкадров: ' + frames + ' | холст ' + cv.width + '×' + cv.height + ' (' + (auto ? 'авто, потолок ' + LEVELS[capLvl] : 'фикс.') + ') | глубина ' + rt.width + '×' + rt.height
+        + '\nкадров: ' + frames + ' | холст ' + cv.width + '×' + cv.height + ' (' + (auto ? 'авто, потолок ' + LEVELS[capLvl] : 'привязано к игре ' + occH + 'p') + ') | глубина ' + rt.width + '×' + rt.height
         + '\nкадр ' + (ema * 1000).toFixed(1) + ' мс (' + Math.round(1 / ema) + ' FPS)'
         + '\nзакрывающих объектов: ' + occN + ' | шейдеров: ' + (renderer.info.programs ? renderer.info.programs.length : '?') + ' | GL: ' + (glErr || 'ok')
         + '\nточек с облаками на холсте: ' + hits + ' (0 — облаков в кадре нет)'
-        + '\n?clouds=depth — карта глубины, ?clouds=debug — розовый экран, ?clouds=nodepth — без глубины, ?clouds=fixed — без автоподстройки';
+        + '\n?clouds=depth — карта глубины, ?clouds=debug — розовый экран, ?clouds=nodepth — без глубины, ?clouds=auto — автоподстройка по FPS';
     }
   }
 
@@ -550,6 +556,7 @@ export function createClouds(scene, opts = {}) {
 
     // Потолок чёткости облаков: сколько строк по вертикали (270 / 360 / 480 / 720 / 1080). Реальное разрешение подбирается само.
     setResolution(lines) {
+      if (!auto) return; // разрешение облаков привязано к кадру игры (setOccHeight)
       capLvl = levelOf(Math.round(lines) || 480);
       if (!auto || lvl > capLvl) { lvl = auto ? capLvl : capLvl; cloudH = LEVELS[lvl]; resizeCanvas(); }
       ban = 99; banUntil = 0;
@@ -562,6 +569,7 @@ export function createClouds(scene, opts = {}) {
       if (h === occH) return;
       occH = h;
       resizeDepth();
+      if (!auto) { const c = linkedH(); if (c !== cloudH) { cloudH = c; resizeCanvas(); } } // облака меняют разрешение вместе с игрой
     },
 
     // t — время игры, с (нужно шейдеру для жизни облаков)
