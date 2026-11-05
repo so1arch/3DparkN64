@@ -27,15 +27,17 @@ const $ = (id) => document.getElementById(id);
 const ents = createObjects(); // интерактивные объекты: лестницы, батуты, ускорители, шипы, лифты
 
 // ── Настройки графики: HIGH + безлимитный FPS по умолчанию ─────
-// FPS_CAP: 0 — UNLOCK (без лимита, цикл не привязан к частоте монитора), -1 — по частоте монитора (VSync), 30 / 60 — ограничение
-let QUALITY = 'high', FPS_CAP = 0, TIME = 'day', WEATHER = 'clear', SHOW_FPS = false;
+// FPS_CAP: -1 — по частоте монитора (VSync, плавно) и счётчик показывает ещё и «макс.» — сколько кадров игра может выдать;
+//          0 — UNLOCK (кадры рисуются без ожидания монитора: счётчик огромный, но картинка рывками); 30 / 60 — ограничение
+let QUALITY = 'high', FPS_CAP = -1, TIME = 'day', WEATHER = 'clear', SHOW_FPS = false;
 // Отражения SSR (только при графике HIGH): on — включены, op — сила 0..1, dist — дальность поиска отражения в метрах,
 // blur — сглаживание, player — отражения на персонаже. Меняются в Настройки → «Отражения SSR».
 const SSR = { on: true, op: 0.6, dist: 30, blur: true, player: true };
 try {
   const q = JSON.parse(localStorage.getItem('n64parkour.v1') || '{}');
   if (q.quality === 'light') QUALITY = 'light';
-  if ([0, -1, 30, 60].includes(q.fps)) FPS_CAP = q.fps;
+  // Старые сохранения со значением 0 (прежний «Максимум») один раз переводим на плавный режим: Unlock даёт рывки
+  if ([0, -1, 30, 60].includes(q.fps)) FPS_CAP = q.fps === 0 && (q.fpsVer | 0) < 2 ? -1 : q.fps;
   if (q.showFps === true) SHOW_FPS = true;
   if (q.time === 'night') TIME = 'night';
   if (q.weather === 'rain') WEATHER = 'rain';
@@ -285,7 +287,7 @@ function setShine(m, rough, metal) {
 const SAVE_KEY = 'n64parkour.v1';
 const AUDIO_VER = 2; // 2: громкость эффектов по умолчанию снижена с 80 % до 50 %
 const MUSIC_AUTO = 11, MUSIC_VER = 2; // 11 — «Авто (по времени и погоде)»; версия 2: Авто стало мелодией по умолчанию
-let save = { best:{}, skin:null, quality:QUALITY, fps:FPS_CAP, showFps:SHOW_FPS, musicPreset:MUSIC_AUTO, musicVer:MUSIC_VER, audio:null, audioVer:AUDIO_VER, time:TIME, weather:WEATHER, ssr:SSR };
+let save = { best:{}, skin:null, quality:QUALITY, fps:FPS_CAP, fpsVer:2, showFps:SHOW_FPS, musicPreset:MUSIC_AUTO, musicVer:MUSIC_VER, audio:null, audioVer:AUDIO_VER, time:TIME, weather:WEATHER, ssr:SSR };
 let musicPreset = MUSIC_AUTO;
 try {
   const s = JSON.parse(localStorage.getItem(SAVE_KEY) || '{}');
@@ -1121,10 +1123,10 @@ $('qualitySel').value=QUALITY;
 {
   const fs=$('fpsSel');
   fs.textContent='';
-  [['Unlock (без лимита)',0],['Монитор (VSync)',-1],['60 FPS',60],['30 FPS',30]].forEach(([n,val])=>fs.add(new Option(n,val)));
+  [['Монитор (плавно) + макс. FPS',-1],['Unlock (рывки, для теста)',0],['60 FPS',60],['30 FPS',30]].forEach(([n,val])=>fs.add(new Option(n,val)));
   fs.value=String(FPS_CAP);
 }
-$('fpsSel').onchange=(e)=>{FPS_CAP=+e.target.value;save.fps=FPS_CAP;persist();fpsN=0;fpsT=0;e.target.blur();};
+$('fpsSel').onchange=(e)=>{FPS_CAP=+e.target.value;save.fps=FPS_CAP;persist();fpsN=0;fpsT=0;potN=0;potT=0;potFps=0;e.target.blur();};
 $('qualitySel').onchange=(e)=>{save.quality=e.target.value;persist();if(save.quality===QUALITY)return;if(mode==='edit'&&!confirm('Страница перезагрузится. Уровень сохранится в ссылке. Продолжить?')){e.target.value=QUALITY;save.quality=QUALITY;persist();return;}location.hash=L.id==='classic'?'':L.seed?`S=${encodeURIComponent(L.seed)}&T=${L.style||'mix'}&D=${L.diff||2}&N=${L.len||'std'}`:`L=${enc(L)}`;location.reload();};
 SKINS.forEach((sk,i)=>$('skinSel').add(new Option(sk.name,i)));
 $('skinSel').add(new Option('Свои цвета','custom'));
@@ -1257,15 +1259,18 @@ function updateSSR(){
 // В режиме Unlock это сколько кадров в секунду игра способна нарисовать, а не частота монитора.
 const fpsEl=$('fps');
 let fpsN=0,fpsT=0;
-function applyFpsShow(){fpsEl.style.display=SHOW_FPS?'block':'none';fpsEl.textContent='';fpsN=0;fpsT=0;}
+// «Макс. FPS» в плавных режимах: раз в 8 кадров ждём конца работы видеокарты (gl.finish) и меряем, сколько заняла вся работа кадра.
+// 1000 / среднее время кадра = сколько кадров игра могла бы рисовать в секунду. Само отображение при этом остаётся плавным.
+let potN=0,potT=0,potFps=0,frameNo=0;
+function applyFpsShow(){fpsEl.style.display=SHOW_FPS?'block':'none';fpsEl.textContent='';fpsN=0;fpsT=0;potN=0;potT=0;potFps=0;}
 $('fpsShowSel').value=SHOW_FPS?'1':'0';
 $('fpsShowSel').onchange=(e)=>{SHOW_FPS=e.target.value==='1';save.showFps=SHOW_FPS;persist();applyFpsShow();e.target.blur();};
 applyFpsShow();
 
 // ── Главный цикл ──────────────────────────────────────────────
-// requestAnimationFrame всегда привязан к частоте монитора (у вас 75 Гц), поэтому в режиме Unlock (FPS_CAP = 0)
-// следующий кадр запускается через MessageChannel: он срабатывает сразу, без ожидания вертикальной синхронизации.
-// Так игра рисует кадры так быстро, как позволяют процессор и видеокарта. Остальные режимы (VSync, 60, 30) идут через
+// requestAnimationFrame привязан к частоте монитора, и это даёт ровную картинку. В режиме Unlock (FPS_CAP = 0)
+// следующий кадр запускается через MessageChannel без ожидания монитора: игра рисует кадры, сколько успеет, но монитор
+// показывает лишь часть из них, поэтому счётчик огромный, а картинка идёт рывками. Остальные режимы идут через
 // requestAnimationFrame. Если вкладка скрыта, всегда используется requestAnimationFrame: он там паузится, и процессор не греется впустую.
 const clock=new THREE.Clock();
 let frameAcc=0,audioAcc=0;
@@ -1280,7 +1285,8 @@ function loop(){
   nextFrame();
   frameAcc+=clock.getDelta();
   if(FPS_CAP>0&&frameAcc<(1/FPS_CAP)*0.9)return;
-  if(SHOW_FPS){fpsN++;fpsT+=frameAcc;if(fpsT>=0.5){fpsEl.textContent=Math.round(fpsN/fpsT)+' FPS';fpsN=0;fpsT=0;}}
+  const t0=SHOW_FPS?performance.now():0;
+  if(SHOW_FPS){fpsN++;fpsT+=frameAcc;if(fpsT>=0.5){fpsEl.textContent=Math.round(fpsN/fpsT)+' FPS'+(FPS_CAP!==0&&potFps?' · макс '+potFps:'');fpsN=0;fpsT=0;}}
   const dt=Math.min(frameAcc,0.05); frameAcc=0; clockT+=dt;
   pad=input.poll(dt,{menuOpen});
   padActions();
@@ -1309,6 +1315,11 @@ function loop(){
     if(useSSR)updateSSR();
     composer.render();
   }else renderer.render(scene,camera);
+  if(SHOW_FPS&&FPS_CAP!==0&&(++frameNo&7)===0){
+    renderer.getContext().finish();
+    potT+=performance.now()-t0;potN++;
+    if(potN>=8){potFps=Math.min(9999,Math.round(1000*potN/Math.max(potT,0.001)));potN=0;potT=0;}
+  }
 }
 
 // Время суток и погода
