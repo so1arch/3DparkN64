@@ -98,6 +98,7 @@ sun.position.set(5, 10, 6);
 scene.add(sun);
 
 let composer = null, ssao = null, ssr = null, renderPass = null;
+let AO_DIV = 1; // во сколько раз кадр SSAO меньше кадра игры (см. resize)
 let ssrGloss = 1; // насколько блестят платформы темы уровня: у «Вулкана» отражения слабее, у «Золота» ярче
 const themeGloss = (th) => Math.min(1.1, 0.45 + 0.9 * (1 - th.rough) * (0.5 + 0.5 * th.metal));
 if (HIGH) {
@@ -119,9 +120,18 @@ if (HIGH) {
   patch(ssr.ssrMaterial, 'void main(){', 'void main(){\n\t\t\tgl_FragColor = vec4(0.0);'); // там, где луч ничего не нашёл, должна быть прозрачность
   patch(ssr.blurMaterial, 'coeSide)/a;', 'coeSide)/max(a,0.0001);');    // без деления на ноль в пустых местах
   patch(ssr.blurMaterial2, 'coeSide)/a;', 'coeSide)/max(a,0.0001);');
+  // ПРОИЗВОДИТЕЛЬНОСТЬ: луч SSR в three.js шагает ровно по одному пикселю, а длина луча в пикселях растёт вместе с разрешением.
+  // Поэтому цена отражений растёт примерно как разрешение в кубе: на Full HD это ~90 раз дороже, чем на 240p (отсюда 15 FPS).
+  // Шагаем крупнее: STRIDE пикселей за шаг. Значение задаёт resize() по числу строк кадра (на 240p шаг остаётся в 1 пиксель, как раньше).
+  ssr.ssrMaterial.defines.STRIDE = '1.00';
+  patch(ssr.ssrMaterial, 'float ySpan=yLen/totalStep;', 'float ySpan=yLen/totalStep;\n\t\t\ttotalStep/=STRIDE; xSpan*=STRIDE; ySpan*=STRIDE;');
   composer.addPass(ssr);
   ssao = new SSAOPass(scene, camera, 320, RES_H);
   ssao.kernelRadius = 2.5;
+  // ПРОИЗВОДИТЕЛЬНОСТЬ: затенение SSAO — мягкий эффект, поэтому при высоком разрешении считаем его в кадре вдвое меньшего размера
+  // (в 4 раза меньше пикселей). Результат растягивается на весь кадр при наложении. Делитель выбирает resize().
+  const aoSetSize = ssao.setSize.bind(ssao);
+  ssao.setSize = (w, h) => aoSetSize(Math.max(2, Math.round(w / AO_DIV)), Math.max(2, Math.round(h / AO_DIV)));
   composer.addPass(ssao);
   composer.addPass(new OutputPass());
 }
@@ -159,6 +169,11 @@ function resize() {
   const w = Math.round(RES_H * innerWidth / innerHeight);
   renderer.setSize(w, RES_H, false);
   renderer.domElement.style.imageRendering = RES_H <= 360 ? 'pixelated' : 'auto';
+  AO_DIV = RES_H > 480 ? 2 : 1;                 // SSAO: выше 480 строк считаем в половинном разрешении
+  if (ssr) {                                    // SSR: шаг луча растёт с разрешением (1 пиксель на 240p, 4 на Full HD, не больше 6)
+    ssr.ssrMaterial.defines.STRIDE = Math.max(1, Math.min(6, RES_H / 270)).toFixed(2);
+    ssr.ssrMaterial.needsUpdate = true;
+  }
   if (composer) composer.setSize(w, RES_H);
   camera.aspect = w / RES_H; camera.updateProjectionMatrix();
   if (cloudsApi) cloudsApi.setOccHeight(RES_H); // карта глубины облаков должна быть того же размера, что и кадр игры
