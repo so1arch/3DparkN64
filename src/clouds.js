@@ -1,34 +1,37 @@
 // src/clouds.js — объёмные облака (рэймарчинг по облачным слоям), в духе Volumetric Cloud из Unreal Engine 5.
 //
-// Что изменилось по сравнению с прошлой версией:
-//   • Чёткость. Игра рисуется в 240 строк (стиль N64), и облака в этом кадре были «кубиками». Теперь облака рисуются
-//     отдельным полотном (canvas) поверх игры в своём разрешении (по умолчанию 480 строк, до 720) и сглаживаются
-//     браузером. Платформы остаются пиксельными, облака мягкие. Чтобы платформы закрывали облака правильно,
-//     перед облаками рисуется карта глубины платформ (в разрешении игры), и луч облака останавливается на платформе.
-//   • Размер. Облака в несколько раз крупнее: 60–180 м в поперечнике, настоящие «башни» кучевых облаков.
-//   • Дальность. Облака видны до 900 м (раньше ~180 м), независимо от тумана платформ. Вдали лёгкая воздушная дымка.
-//   • Свет. Тени внутри облака считаются дальше (пять проб до ~80 м), нижняя часть облака тёмная и холодная,
-//     макушка светлая, у светила серебристая кромка. Свет меняется вместе с солнцем и луной.
-//   • Погода. setWeather() теперь подключён: в дождь облака сходятся в сплошную облачность.
+// Как это устроено и почему это быстро:
+//   • Свой холст. Игра рисуется в 240 строк (стиль N64), облака рисуются отдельным холстом поверх неё в своём
+//     разрешении и сглаживаются браузером. Платформы закрывают облака через карту глубины (в разрешении игры):
+//     луч облака останавливается на платформе.
+//   • Параметры облаков считает процессор, а не видеокарта. Мир разбит на ячейки, в каждой живёт одно облако.
+//     Раз в 0.1 с процессор пересчитывает облака вокруг камеры (16x16 ячеек на слой) и кладёт в три маленькие
+//     текстуры. Видеокарта на каждом шаге луча только читает 4 ячейки из текстуры, без хешей и тригонометрии.
+//   • Автоподстройка разрешения. Холст облаков сам уменьшается, если FPS падает ниже ~48, и осторожно растёт обратно,
+//     когда запас есть. «Чёткость облаков» в настройках задаёт потолок.
+//   • Дешёвый свет. Три-четыре пробы к солнцу, фаза рассеяния считается один раз на луч, вдали мелкая лепка и свет
+//     для почти прозрачных точек пропускаются, шаги луча растут с расстоянием.
+//   • В меню облака обновляются в четверть частоты кадров (под полупрозрачным меню этого не видно).
 //
-// Интерфейс для main.js:
+// Интерфейс для main.js (прежний):
 //   createClouds(scene, opts) -> { objects, setLook, setBands, setWeather, setResolution, update, render }
-//   opts: count/high — качество; height — строк по вертикали у полотна облаков; occHeight — строк у игры (RES_H);
-//         maxDist — дальность, м; parent — куда добавить полотно (по умолчанию #game).
-//   markOccluder(obj) — пометить объект как «закрывающий облака» (платформы, лифты, игрок).
+//   opts: count/high — качество; height — потолок разрешения облаков (строк); occHeight — строк у игры (RES_H);
+//         maxDist — дальность, м; auto:false — без автоподстройки; parent — куда добавить холст (по умолчанию #game).
+//   markOccluder(obj) — пометить объект как «закрывающий облака» (необязательно: непрозрачные меши находятся сами).
 //
-// Диагностика: если шейдер не соберётся, текст ошибки появится на экране. Адрес игры с ?clouds=debug рисует розовый экран.
+// Адрес игры с параметрами: ?clouds=info (панель состояния), ?clouds=debug (розовый экран), ?clouds=depth (карта глубины),
+// ?clouds=nodepth (без учёта платформ), ?clouds=fixed (без автоподстройки разрешения).
 
 import * as THREE from 'three';
 
 export const OCC_LAYER = 1;
-// Помечает все меши объекта слоем «закрывает облака». Этот слой видит только проход глубины облаков.
 export function markOccluder(obj) { obj.traverse((o) => { if (o.isMesh) o.layers.enable(OCC_LAYER); }); }
 
 const TOON_LEVELS = 0;               // 0 — плавный тон; 4…6 — ступенчатый «мультяшный»
 const WIND_A = Math.atan2(1.2, 3.4); // базовое направление ветра (рад, в плоскости XZ)
 const WIND_V = 3.6;                  // базовая скорость ветра, м/с
 const FOCUS_DIST = 8.7;              // расстояние камера → игрок в третьем лице
+const NC = 16;                       // ячеек по каждой оси в таблице вокруг камеры (степень двойки)
 
 // Три слоя. C — размер ячейки сетки, м (в каждой ячейке живёт одно облако); szr — радиус облака в долях C;
 // st — максимальная вытянутость по ветру; tk — толщина в долях радиуса; wind — во сколько раз слой быстрее базового ветра.
@@ -43,6 +46,19 @@ const HMAX = LAYERS.map((L, i) => 1.2 * L.C * L.szr[1] * L.tk[1] * (i === 0 ? 1.
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const approach = (x, to, d) => (x < to ? Math.min(to, x + d) : Math.max(to, x - d));
+const lerp = (a, b, t) => a + (b - a) * t;
+const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+
+// ── Хеш для ячеек (на процессоре) ──────────────────────────────
+function pcg(x, y, z, out) {
+  x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+  y = (Math.imul(y, 1664525) + 1013904223) >>> 0;
+  z = (Math.imul(z, 1664525) + 1013904223) >>> 0;
+  x = (x + Math.imul(y, z)) >>> 0; y = (y + Math.imul(z, x)) >>> 0; z = (z + Math.imul(x, y)) >>> 0;
+  x = (x ^ (x >>> 16)) >>> 0; y = (y ^ (y >>> 16)) >>> 0; z = (z ^ (z >>> 16)) >>> 0;
+  x = (x + Math.imul(y, z)) >>> 0; y = (y + Math.imul(z, x)) >>> 0; z = (z + Math.imul(x, y)) >>> 0;
+  out[0] = x / 4294967296; out[1] = y / 4294967296; out[2] = z / 4294967296;
+}
 
 // ── 3D-шум (создаётся один раз) ────────────────────────────────
 // Бесшовный. R — гладкий, G — крупная кучевая лепка (Вороной 3x3x3), B — средняя (6x6x6), A — мелкая (12x12x12).
@@ -50,7 +66,6 @@ function makeNoise3D(N = 32) {
   let s = 20261104;
   const rnd = () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296);
   const sm = (t) => t * t * (3 - 2 * t);
-  const lerp = (a, b, t) => a + (b - a) * t;
   const lattice = (P) => Float32Array.from({ length: P * P * P }, rnd);
   const vnoise = (A, P, u, v, w) => {
     const x = u * P, y = v * P, z = w * P;
@@ -92,6 +107,17 @@ function makeNoise3D(N = 32) {
   return tex;
 }
 
+// Таблица ячеек: три текстуры NC x (NC*3) (по NC строк на слой). Облако ячейки c лежит в тексле (c.x mod NC, c.z mod NC + слой*NC).
+//   A: центр x, центр z, радиус по x, радиус по z   (радиус 0 — облака в ячейке нет)
+//   B: толщина, высота дна, «сила жизни» (0..1)
+//   C: смещение шума (xyz)
+function makeCellTex() {
+  const d = new Float32Array(NC * NC * 3 * 4);
+  const t = new THREE.DataTexture(d, NC, NC * 3, THREE.RGBAFormat, THREE.FloatType);
+  t.minFilter = t.magFilter = THREE.NearestFilter; t.generateMipmaps = false; t.needsUpdate = true;
+  return { d, t };
+}
+
 // ── Шейдеры ────────────────────────────────────────────────────
 const VERT = `
 uniform mat3 uCamRot;
@@ -105,46 +131,32 @@ void main() {
 }`;
 
 const f1 = (x) => x.toFixed(1), f2 = (x) => x.toFixed(2), f3 = (x) => x.toFixed(3);
-const v2 = (a) => `vec2(${f3(a[0])}, ${f3(a[1])})`;
-const call = (i, band, tk, cov) => {
-  const L = LAYERS[i];
-  return `layerDens(p, ${f1(L.C)}, ${band}, ${f2(L.wind)}, ${i}, ${v2(L.szr)}, ${f2(L.st)}, ${tk}, ${cov}, full, hAcc)`;
-};
+const call = (i) => `layerDens(p, ${f1(LAYERS[i].C)}, uBand${i}, ${f2(LAYERS[i].wind)}, ${i}, full, hAcc)`;
 
 function fragSrc(high) {
   const S = high
-    ? { steps: 56, ls: 5, lb: 6.0, lg: 1.9, smin: 4.0, sk: 0.085, smax: 48.0 }
-    : { steps: 40, ls: 3, lb: 10.0, lg: 2.1, smin: 6.0, sk: 0.12, smax: 60.0 };
+    ? { steps: 44, ls: 4, lb: 7.0, lg: 2.1, smin: 5.0, sk: 0.10, smax: 55.0, full: 24.0 }
+    : { steps: 30, ls: 3, lb: 9.0, lg: 2.3, smin: 7.0, sk: 0.14, smax: 70.0, full: 20.0 };
   const defs = `#define STEPS ${S.steps}\n#define LSTEPS ${S.ls}\n#define LBASE ${f1(S.lb)}\n#define LGROW ${f2(S.lg)}\n`
-    + `#define STEP_MIN ${f1(S.smin)}\n#define STEP_K ${f3(S.sk)}\n#define STEP_MAX ${f1(S.smax)}\n#define TOON_LEVELS ${TOON_LEVELS}\n`;
+    + `#define STEP_MIN ${f1(S.smin)}\n#define STEP_K ${f3(S.sk)}\n#define STEP_MAX ${f1(S.smax)}\n#define FULL_SL ${f1(S.full)}\n`
+    + `#define NC ${NC}\n#define TOON_LEVELS ${TOON_LEVELS}\n`;
   return defs + `
 #define SIGMA 0.30
 
 precision highp sampler2D;
 precision highp sampler3D;
 uniform sampler3D uNoise;
-uniform sampler2D uDepth;
-uniform float uTime, uRain, uMidK, uMaxDist, uTubeOn, uDebug, uUseDepth;
+uniform sampler2D uDepth, uCellA, uCellB, uCellC;
+uniform float uTime, uRain, uMaxDist, uTubeOn, uDebug, uUseDepth;
 uniform vec2 uWind, uFogRange, uNearFar, uHull;
 uniform vec3 uCamPos, uCamFwd, uFocus, uLit, uShade, uGlow, uSunDir, uFogColor, uBand0, uBand1, uBand2;
 varying vec3 vRay;
 varying vec2 vUv;
 
-// Целочисленный хеш (PCG): облака лежат в ячейках сетки, у каждой ячейки и каждого «цикла жизни» свои случайные числа
-uvec3 pcg3d(uvec3 v) {
-  v = v * 1664525u + 1013904223u;
-  v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
-  v ^= v >> 16u;
-  v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
-  return v;
-}
-vec3 rnd3(ivec3 c) { return vec3(pcg3d(uvec3(c))) * (1.0 / 4294967295.0); }
-
-// Плотность одного слоя в точке p. В ячейке живёт одно облако; точку задевают облака только из четырёх ближайших ячеек.
-// band: x — низ самых нижних оснований, y — верх самых высоких оснований, z — потолок слоя.
-// tk — толщина облака в долях радиуса (min, max). full=false — дешёвый вариант без мелкой лепки (для луча света).
-// hAcc копит «высоту внутри облака» (для градиента).
-float layerDens(vec3 p, float C, vec3 band, float wmul, int L, vec2 szr, float stMax, vec2 tk, float cover, bool full, inout float hAcc) {
+// Плотность одного слоя в точке p. Облака ячеек (их параметры лежат в таблице uCellA..C) считает процессор.
+// Точку задевают облака только из четырёх ближайших ячеек. band: x — низ самых нижних оснований, z — потолок слоя.
+// full=false — дешёвый вариант без мелкой лепки (для луча света и дальних шагов). hAcc копит «высоту внутри облака».
+float layerDens(vec3 p, float C, vec3 band, float wmul, int L, bool full, inout float hAcc) {
   if (p.y < band.x || p.y > band.z) return 0.0;
   vec2 q = p.xz - uWind * wmul;               // сетка едет вместе с ветром
   vec2 g = q / C - 0.5;
@@ -152,36 +164,18 @@ float layerDens(vec3 p, float C, vec3 band, float wmul, int L, vec2 szr, float s
   float acc = 0.0;
   for (int n = 0; n < 4; n++) {
     ivec2 c = c0 + ivec2(n & 1, n >> 1);
-    vec3 r0 = rnd3(ivec3(c, L));
-    float life = mix(100.0, 200.0, r0.x);     // срок жизни облака, с
-    float tau = uTime / life + r0.y;
-    float cyc = floor(tau);
-    float u = tau - cyc;                      // возраст 0..1; на новом цикле облако рождается заново и другим
-    int cy = int(cyc) * 3 + L;
-    vec3 r1 = rnd3(ivec3(c, cy + 1000));
-    float pres = clamp((cover - r1.x) / 0.15, 0.0, 1.0);
-    if (pres <= 0.0) continue;
-    float env = smoothstep(0.0, 0.18, u) * (1.0 - smoothstep(0.78, 1.0, u)) * pres;
-    if (env <= 0.0) continue;
-    vec3 r2 = rnd3(ivec3(c, cy + 2000003));
-    vec3 r3 = rnd3(ivec3(c, cy + 3000007));
-    float k = 0.6 + 0.4 * env;                // растёт и ужимается вместе с жизнью
-    float Rh = C * mix(szr.x, szr.y, r1.z) * (1.0 + 0.35 * uRain) * k;
-    float Rx = min(Rh * mix(1.0, stMax, r2.y), 0.76 * C);   // вытянуто по ветру
-    float Rz = Rh * mix(0.85, 1.15, r2.z);
-    float Ht = Rh * mix(tk.x, tk.y, r2.x);
-    float yb = mix(band.x, band.y, r1.y);     // высота плоского дна
-    vec2 ctr = (vec2(c) + 0.5 + (r3.xy - 0.5) * 0.30
-      + 0.05 * vec2(sin(uTime * 0.07 + r0.z * 6.283), cos(uTime * 0.053 + r0.x * 6.283))) * C;
-    float ye = (p.y - yb) / Ht;
+    ivec2 tc = ivec2(c.x & (NC - 1), (c.y & (NC - 1)) + L * NC);
+    vec4 A = texelFetch(uCellA, tc, 0);
+    if (A.z <= 0.0) continue;                 // в ячейке нет облака
+    vec4 B = texelFetch(uCellB, tc, 0);       // толщина, дно, сила жизни
+    float ye = (p.y - B.y) / B.x;
     if (ye <= 0.0) continue;                  // под дном облака пусто: оно плоскодонное
-    vec3 o = vec3((q.x - ctr.x) / Rx, (p.y - (yb + 0.3 * Ht)) / (0.85 * Ht), (q.y - ctr.y) / Rz);
+    vec3 o = vec3((q.x - A.x) / A.z, (p.y - (B.y + 0.3 * B.x)) / (0.85 * B.x), (q.y - A.y) / A.w);
     float rr = dot(o, o);
     if (rr >= 1.0) continue;
     float s = 1.0 - sqrt(rr);
-    // Лепка: крупные «шары» у каждого облака со своим смещением шума, шум медленно «кипит» вверх.
-    // Облака большие, поэтому шум растянут: крупная лепка ~20 м, мелкая ~7 м.
-    vec3 nq = vec3(q.x - ctr.x, p.y - yb, q.y - ctr.y) + r3 * 37.0 + r2.yzx * 11.0;
+    // Лепка: крупные «шары» у каждого облака со своим смещением шума, шум медленно «кипит» вверх
+    vec3 nq = vec3(q.x - A.x, p.y - B.y, q.y - A.y) + texelFetch(uCellC, tc, 0).xyz;
     nq.y -= uTime * 0.45;
     vec4 n1 = textureLod(uNoise, nq * (1.0 / 56.0), 0.0);
     float lumps = 0.55 * n1.g + 0.45 * n1.b;
@@ -191,7 +185,7 @@ float layerDens(vec3 p, float C, vec3 band, float wmul, int L, vec2 szr, float s
       float det = 0.6 * n2.g + 0.4 * n2.b;
       d -= (1.0 - det) * 0.40 * (1.0 - clamp(d * 1.5, 0.0, 1.0));
     }
-    d -= (1.0 - env) * 0.9;                   // рождение и распад идут кусками лепки
+    d -= (1.0 - B.z) * 0.9;                   // рождение и распад идут кусками лепки
     d *= smoothstep(0.0, 0.08, s) * smoothstep(0.0, 0.30, ye);   // ровный край и мягкое дно
     if (d > 0.0) { acc += d; hAcc += min(ye, 1.0) * d; }
   }
@@ -201,13 +195,9 @@ float layerDens(vec3 p, float C, vec3 band, float wmul, int L, vec2 szr, float s
 // Плотность всех слоёв. Складываем: соседние облака сливаются. h01 — высота внутри облака (0 дно, 1 макушка)
 float density(vec3 p, bool full, out float h01) {
   float hAcc = 0.0;
-  float rk = 1.0 - 0.3 * uRain;
-  float cov0 = 0.90 + 0.10 * uRain;
-  float cov1 = 0.60 + 0.40 * uRain - (1.0 - uMidK) * 1.4;
-  float cov2 = 0.52 + 0.48 * uRain;
-  float d = ${call(0, 'uBand0', v2(LAYERS[0].tk), 'cov0')};
-  d += ${call(1, 'uBand1', v2(LAYERS[1].tk) + ' * rk', 'cov1')};
-  d += ${call(2, 'uBand2', v2(LAYERS[2].tk) + ' * rk', 'cov2')};
+  float d = ${call(0)};
+  d += ${call(1)};
+  d += ${call(2)};
   d = min(d, 1.6);
   h01 = clamp(hAcc / max(d, 1e-3), 0.0, 1.0);
   return d;
@@ -235,6 +225,7 @@ void main() {
   // Проверка тракта отрисовки: ?clouds=debug — сплошной розовый экран, ?clouds=depth — карта глубины (серое — платформы, зелёное — пусто)
   if (uDebug > 0.5 && uDebug < 1.5) { gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }
   if (uDebug > 1.5) { gl_FragColor = dep < 0.99999 ? vec4(vec3(clamp(vz / 60.0, 0.0, 1.0)), 1.0) : vec4(0.0, 0.35, 0.0, 1.0); return; }
+
   vec3 rd = normalize(vRay);
   vec3 ro = uCamPos;
 
@@ -246,47 +237,47 @@ void main() {
     float ta = (uHull.x - ro.y) / rd.y, tb = (uHull.y - ro.y) / rd.y;
     t0 = max(t0, min(ta, tb)); t1 = min(t1, max(ta, tb));
   }
-  // Платформа (или игрок) на пути луча: дальше неё облако не рисуем. Глубина лежит в разрешении игры без сглаживания,
-  // поэтому край платформы совпадает с пикселями основного кадра.
+  // Платформа (или игрок) на пути луча: дальше неё облако не рисуем
   if (uUseDepth > 0.5 && dep < 0.99999) t1 = min(t1, vz / max(dot(rd, uCamFwd), 1e-3));
   if (t1 <= t0) discard;
 
+  // Фаза рассеяния зависит только от направления луча: считаем один раз на три «октавы»
   float cosT = dot(rd, uSunDir);
+  float ph0 = mix(hg(cosT, -0.2), hg(cosT, 0.65), 0.3);
+  float ph1 = mix(hg(cosT, -0.12), hg(cosT, 0.39), 0.3);
+  float ph2 = mix(hg(cosT, -0.072), hg(cosT, 0.234), 0.3);
+
   float t = t0 + ign(gl_FragCoord.xy) * clamp(t0 * STEP_K, STEP_MIN, STEP_MAX);
   float T = 1.0, Tacc = 0.0, Aacc = 0.0, tFirst = -1.0;
-  vec3 Cacc = vec3(0.0);
+  vec3 Cacc = vec3(0.0), lastCs = uLit * 0.85;
   for (int i = 0; i < STEPS; i++) {
     if (t > t1 || T < 0.03) break;
     float sl = clamp(t * STEP_K, STEP_MIN, STEP_MAX);   // шаг растёт с расстоянием: вдали пиксель всё равно крупный
     vec3 p = ro + rd * t;
     float h01;
-    float d = density(p, true, h01);
+    float d = density(p, sl < FULL_SL, h01);
     if (d > 0.0) d = max(0.0, d - (1.0 - clearF(p)) * 1.1);
     if (d > 0.002) {
-      // Сколько света дойдёт до точки: пробы в сторону светила на расстояния до ~80 м, в том числе сквозь соседние облака
-      float tau = 0.0;
-      for (int k = 0; k < LSTEPS; k++) {
-        float off = LBASE * pow(LGROW, float(k)), hh;
-        tau += density(p + uSunDir * off, false, hh) * off * 0.35;
-      }
-      // Три «октавы» многократного рассеяния: тени мягкие, а свет у светила образует серебристую кромку
-      float lightE = 0.0, aa = 1.0, bb = 1.0, cc = 1.0;
-      for (int o = 0; o < 3; o++) {
-        float ph = mix(hg(cosT, -0.2 * cc), hg(cosT, 0.65 * cc), 0.3);
-        lightE += bb * ph * exp(-tau * SIGMA * aa);
-        aa *= 0.40; bb *= 0.55; cc *= 0.6;
-      }
-      lightE *= 0.5;
-#if TOON_LEVELS > 0
-      lightE = floor(lightE * float(TOON_LEVELS) + 0.5) / float(TOON_LEVELS);
-#endif
-      // Собственный градиент: дно холодное и тёмное (свет только от неба), макушка светлая
-      vec3 amb = uShade * mix(0.70, 1.35, h01) + uLit * 0.08 * h01;
-      vec3 cs = mix(amb, uLit, clamp(lightE, 0.0, 1.0));
-      cs += uGlow * max(lightE - 1.0, 0.0) * 0.30;       // серебристая кромка у светила
       float a = 1.0 - exp(-d * SIGMA * sl);
       float w = a * T;
-      Cacc += cs * w; Tacc += t * w; Aacc += w;
+      if (w > 0.02) { // свет считаем только для заметных точек; у почти прозрачных берём цвет с прошлой точки
+        // Сколько света дойдёт до точки: пробы в сторону светила, в том числе сквозь соседние облака
+        float tau = 0.0, off = LBASE;
+        for (int k = 0; k < LSTEPS; k++) {
+          float hh;
+          tau += density(p + uSunDir * off, false, hh) * off * 0.35;
+          off *= LGROW;
+        }
+        // Три «октавы» многократного рассеяния: тени мягкие, а свет у светила образует серебристую кромку
+        float lightE = (ph0 * exp(-tau * SIGMA) + 0.55 * ph1 * exp(-tau * SIGMA * 0.4) + 0.3025 * ph2 * exp(-tau * SIGMA * 0.16)) * 0.5;
+#if TOON_LEVELS > 0
+        lightE = floor(lightE * float(TOON_LEVELS) + 0.5) / float(TOON_LEVELS);
+#endif
+        // Собственный градиент: дно холодное и тёмное (свет только от неба), макушка светлая
+        vec3 amb = uShade * mix(0.70, 1.35, h01) + uLit * 0.08 * h01;
+        lastCs = mix(amb, uLit, clamp(lightE, 0.0, 1.0)) + uGlow * max(lightE - 1.0, 0.0) * 0.30; // серебристая кромка у светила
+      }
+      Cacc += lastCs * w; Tacc += t * w; Aacc += w;
       T *= 1.0 - a;
       if (tFirst < 0.0 && Aacc > 0.1) tFirst = t;
     }
@@ -309,22 +300,26 @@ void main() {
 
 const NOOP = () => {};
 const STUB = { objects: [], setLook: NOOP, setBands: NOOP, setWeather: NOOP, setResolution: NOOP, update: NOOP, render: NOOP };
+const LEVELS = [144, 180, 216, 270, 360, 480, 720, 1080]; // ступени разрешения холста облаков (строк)
+const levelOf = (lines) => { let k = 0; LEVELS.forEach((v, i) => { if (v <= lines) k = i; }); return k; };
 
 export function createClouds(scene, opts = {}) {
   const high = opts.high ?? (opts.count == null ? true : opts.count >= 30);
-  // Диагностика: ?clouds=debug (розовый экран), ?clouds=depth (карта глубины), ?clouds=nodepth (без учёта платформ), ?clouds=quiet (скрыть панель)
   const qmode = (typeof location !== 'undefined' && /[?&]clouds=(\w+)/.exec(location.search) || [])[1] || '';
   const debug = qmode === 'debug' ? 1 : qmode === 'depth' ? 2 : 0;
-  const SHOW_INFO = qmode !== 'quiet'; // когда всё заработает, поставьте false
+  const SHOW_INFO = qmode === 'info';
   const occH = opts.occHeight || 240;                 // строк у основного кадра игры (RES_H в main.js)
-  let cloudH = opts.height || (high ? 480 : 360);     // строк у полотна облаков
-  const maxDist = opts.maxDist || (high ? 900 : 600); // дальность облаков, м
+  const maxDist = opts.maxDist || (high ? 800 : 550); // дальность облаков, м
+  const auto = opts.auto !== false && qmode !== 'fixed';
+  let capLvl = levelOf(opts.height || (high ? 480 : 360));  // потолок разрешения: выбор игрока в настройках
+  let lvl = auto ? Math.min(capLvl, 3) : capLvl;            // автоподстройка стартует с 270 строк
+  let cloudH = LEVELS[lvl];
   let light = opts.light || null;                     // направленный свет (солнце/луна); если не передан, берём первый DirectionalLight сцены
 
   // Своё полотно и свой рендерер: у облаков разрешение выше, чем у игры
   let renderer;
   try {
-    renderer = new THREE.WebGLRenderer({ alpha: true, antialias: false, premultipliedAlpha: true, powerPreference: 'high-performance' });
+    renderer = new THREE.WebGLRenderer({ alpha: true, antialias: false, depth: false, stencil: false, premultipliedAlpha: true, powerPreference: 'high-performance' });
   } catch (e) {
     console.warn('Облака отключены: не удалось создать второй WebGL-контекст', e);
     return STUB;
@@ -336,12 +331,13 @@ export function createClouds(scene, opts = {}) {
   renderer.setPixelRatio(1);
   renderer.setClearColor(0x000000, 0);
 
+  const CA = makeCellTex(), CB = makeCellTex(), CC = makeCellTex();
   const mat = new THREE.ShaderMaterial({
     vertexShader: VERT,
     fragmentShader: fragSrc(high),
     uniforms: {
-      uNoise: { value: makeNoise3D(32) }, uDepth: { value: null },
-      uTime: { value: 0 }, uDebug: { value: debug }, uUseDepth: { value: qmode === 'nodepth' ? 0 : 1 }, uRain: { value: 0 }, uMidK: { value: 1 }, uMaxDist: { value: maxDist }, uTubeOn: { value: 0 },
+      uNoise: { value: makeNoise3D(32) }, uDepth: { value: null }, uCellA: { value: CA.t }, uCellB: { value: CB.t }, uCellC: { value: CC.t },
+      uTime: { value: 0 }, uDebug: { value: debug }, uUseDepth: { value: qmode === 'nodepth' ? 0 : 1 }, uRain: { value: 0 }, uMaxDist: { value: maxDist }, uTubeOn: { value: 0 },
       uWind: { value: new THREE.Vector2() }, uFogRange: { value: new THREE.Vector2(24, 150) },
       uNearFar: { value: new THREE.Vector2(0.1, 250) }, uHull: { value: new THREE.Vector2(-30, 80) },
       uTan: { value: new THREE.Vector2(1, 1) }, uCamRot: { value: new THREE.Matrix3() },
@@ -360,19 +356,18 @@ export function createClouds(scene, opts = {}) {
   mesh.frustumCulled = false;
   cloudScene.add(mesh);
 
-  // ── Размеры и карта глубины платформ ─────────────────────────
+  // ── Размеры: холст облаков (меняется автоподстройкой) и карта глубины (размер как у кадра игры) ──
   let rt = null;
-  function resize() {
-    const aspect = innerWidth / innerHeight;
-    renderer.setSize(Math.max(2, Math.round(cloudH * aspect)), cloudH, false);
-    const ow = Math.max(2, Math.round(occH * aspect)); // ровно столько же, сколько у основного кадра игры
+  const resizeCanvas = () => renderer.setSize(Math.max(2, Math.round((cloudH * innerWidth) / innerHeight)), cloudH, false);
+  function resizeDepth() {
+    const ow = Math.max(2, Math.round((occH * innerWidth) / innerHeight)); // ровно столько же, сколько у основного кадра игры
     if (rt) rt.dispose();
     const dt = new THREE.DepthTexture(ow, occH, THREE.UnsignedIntType);
     rt = new THREE.WebGLRenderTarget(ow, occH, { depthTexture: dt, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
     u.uDepth.value = dt;
   }
-  addEventListener('resize', resize);
-  resize();
+  addEventListener('resize', () => { resizeCanvas(); resizeDepth(); });
+  resizeCanvas(); resizeDepth();
   const occMat = new THREE.MeshBasicMaterial({ colorWrite: false, fog: false }); // платформы только в буфер глубины
 
   const field = { low: -10, high: 10 };  // высоты уровня, под которые подстраиваемся (setBands)
@@ -380,6 +375,68 @@ export function createClouds(scene, opts = {}) {
   let first = true, rainT = 0, rainS = 0, midK = 1, windX = 0, windZ = 0, editing = false, hooked = false;
   const lit = new THREE.Color(1, 1, 1), shade = new THREE.Color(0.25, 0.3, 0.45), tmp = new THREE.Color();
   const sunTint = new THREE.Color(1, 1, 1), WARM = new THREE.Color(1, 0.93, 0.8);
+  let cam = null;
+
+  // ── Таблица облаков на процессоре ─────────────────────────────
+  const R0 = [0, 0, 0], R1 = [0, 0, 0], R2 = [0, 0, 0], R3 = [0, 0, 0];
+  const wrap = (i) => ((i % NC) + NC) % NC;
+  function fillLayer(L, t, rain, band, camx, camz) {
+    const D = LAYERS[L], C = D.C;
+    const cover = L === 0 ? 0.90 + 0.10 * rain : L === 1 ? 0.60 + 0.40 * rain - (1 - midK) * 1.4 : 0.52 + 0.48 * rain;
+    const rk = L === 0 ? 1 : 1 - 0.3 * rain;
+    const cx0 = Math.floor((camx - windX * D.wind) / C), cz0 = Math.floor((camz - windZ * D.wind) / C);
+    for (let j = -NC / 2; j < NC / 2; j++) for (let i = -NC / 2; i < NC / 2; i++) {
+      const cx = cx0 + i, cz = cz0 + j;
+      const o = ((wrap(cz) + L * NC) * NC + wrap(cx)) * 4;
+      pcg(cx, cz, L, R0);
+      const life = lerp(100, 200, R0[0]), tau = t / life + R0[1], cyc = Math.floor(tau), age = tau - cyc; // возраст 0..1; на новом цикле облако рождается заново и другим
+      const cy = cyc * 3 + L;
+      pcg(cx, cz, cy + 1000, R1);
+      const pres = clamp((cover - R1[0]) / 0.15, 0, 1);
+      const env = pres > 0 ? sstep(0, 0.18, age) * (1 - sstep(0.78, 1, age)) * pres : 0;
+      if (env <= 0) { CA.d[o] = CA.d[o + 1] = CA.d[o + 2] = CA.d[o + 3] = 0; continue; }
+      pcg(cx, cz, cy + 2000003, R2); pcg(cx, cz, cy + 3000007, R3);
+      const k = 0.6 + 0.4 * env;                                                   // растёт и ужимается вместе с жизнью
+      const Rh = C * lerp(D.szr[0], D.szr[1], R1[2]) * (1 + 0.35 * rain) * k;
+      const Rx = Math.min(Rh * lerp(1, D.st, R2[1]), 0.76 * C);                    // вытянуто по ветру
+      const Rz = Rh * lerp(0.85, 1.15, R2[2]);
+      const Ht = Rh * lerp(D.tk[0], D.tk[1], R2[0]) * rk;
+      CA.d[o] = (cx + 0.5 + (R3[0] - 0.5) * 0.30 + 0.05 * Math.sin(t * 0.07 + R0[2] * 6.283)) * C;
+      CA.d[o + 1] = (cz + 0.5 + (R3[1] - 0.5) * 0.30 + 0.05 * Math.cos(t * 0.053 + R0[0] * 6.283)) * C;
+      CA.d[o + 2] = Rx; CA.d[o + 3] = Rz;
+      CB.d[o] = Ht; CB.d[o + 1] = lerp(band[0], band[1], R1[1]); CB.d[o + 2] = env; CB.d[o + 3] = 0;
+      CC.d[o] = R3[0] * 37 + R2[1] * 11; CC.d[o + 1] = R3[1] * 37 + R2[2] * 11; CC.d[o + 2] = R3[2] * 37 + R2[0] * 11; CC.d[o + 3] = 0;
+    }
+  }
+  let cellT = -1;
+  function refreshCells(t) {
+    if (!cam || (cellT >= 0 && t - cellT < 0.1 && t >= cellT)) return;
+    cellT = t;
+    const lo = cur.low, hi = cur.high, r = rainS;
+    const bands = [[lo - 44, lo - 16], [lo + 6, hi + 10], [hi + 34 - 10 * r, hi + 76 - 10 * r]];
+    for (let L = 0; L < 3; L++) fillLayer(L, t, r, bands[L], cam.position.x, cam.position.z);
+    CA.t.needsUpdate = CB.t.needsUpdate = CC.t.needsUpdate = true;
+  }
+
+  // ── Автоподстройка разрешения ────────────────────────────────
+  let ema = 0.016, evalT = 0, warm = 0, upStreak = 0, lastUp = -99, ban = 99, banUntil = 0, banLen = 120, clock = 0, minEma = Infinity;
+  function autoScale(dt) {
+    clock += dt;
+    ema += (dt - ema) * Math.min(1, dt / 0.6);
+    if (++warm < 90) return;              // прогрев: компиляция шейдера, первые кадры
+    evalT += dt;
+    if (evalT < 1) return;
+    evalT = 0;
+    minEma = Math.min(minEma, ema);
+    const maxL = Math.min(capLvl, clock < banUntil ? ban - 1 : 99);
+    if (ema > 0.0215 && lvl > 0) {        // медленнее ~46 FPS: уменьшаем холст облаков
+      if (clock - lastUp < 8) { ban = lvl; banUntil = clock + banLen; banLen = Math.min(900, banLen * 2); } // апгрейд не удался: не пробуем снова
+      lvl--; upStreak = 0; lastUp = -99; cloudH = LEVELS[lvl]; resizeCanvas();
+    } else if (ema < 0.0185 && ema < minEma * 1.1 + 0.0005 && lvl < maxL) { // запас есть: аккуратно растём
+      if (++upStreak >= 4) { lvl++; upStreak = 0; lastUp = clock; cloudH = LEVELS[lvl]; resizeCanvas(); }
+    } else upStreak = 0;
+    if (lvl > maxL) { lvl = maxL; cloudH = LEVELS[lvl]; resizeCanvas(); }
+  }
 
   // Параметры камеры и тумана берём в момент отрисовки: камера одна, но дальность и туман меняются
   mesh.onBeforeRender = (rdr, scn, camera) => {
@@ -411,13 +468,14 @@ export function createClouds(scene, opts = {}) {
   };
 
   // ── Отрисовка: сама, из update() ─────────────────────────────
-  let cam = null, frames = 0, tick = 0, occN = 0, hits = '—', errText = '', errCount = 0, glErr = 0;
-  let info = null;
-  if (SHOW_INFO) {
+  let frames = 0, tick = 0, menuTick = 0, occN = 0, hits = '—', errText = '', errCount = 0, glErr = 0, info = null;
+  const showPanel = () => {
+    if (info) return;
     info = document.createElement('pre');
     info.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:99998;background:rgba(0,0,0,.78);color:#7dff9a;font:11px/1.35 monospace;padding:6px 8px;pointer-events:none;white-space:pre-wrap;max-width:62vw';
     document.body.append(info);
-  }
+  };
+  if (SHOW_INFO) showPanel();
   // Всё непрозрачное в сцене закрывает облака (платформы, лифты, игрок, монеты). Метки обновляются раз в 10 кадров.
   function syncOccluders() {
     let n = 0;
@@ -430,8 +488,9 @@ export function createClouds(scene, opts = {}) {
     occN = n;
   }
   function renderNow() {
-    if (!cam) cam = opts.camera || scene.children.find((o) => o.isCamera) || null;
     if (!cam || !rt || errCount > 3) return;
+    // В меню (оно полупрозрачное) облака обновляем в четверть частоты: холст сохраняет прошлую картинку
+    if (document.body.classList.contains('menu') && (menuTick++ & 3)) return;
     try {
       if (tick++ % 10 === 0) syncOccluders();
       cam.updateWorldMatrix(true, false);
@@ -446,7 +505,7 @@ export function createClouds(scene, opts = {}) {
       }
       renderer.render(cloudScene, cam);
       frames++;
-      if (info && frames % 20 === 0) { // раз в треть секунды: проверяем, нарисовалось ли что-нибудь на полотне облаков
+      if (info && frames % 20 === 0) { // раз в треть секунды: проверяем, нарисовалось ли что-нибудь на холсте облаков
         const gl = renderer.getContext(), px = new Uint8Array(4), w = cv.width, h = cv.height;
         let hit = 0, tot = 0;
         for (let iy = 1; iy <= 3; iy++) for (let ix = 1; ix <= 5; ix++) {
@@ -458,40 +517,45 @@ export function createClouds(scene, opts = {}) {
     } catch (e) {
       errCount++; errText = String((e && e.stack) || e).slice(0, 700);
       console.error('[clouds] ошибка отрисовки:', e);
+      showPanel();
     }
-    if (info && frames % 20 === 0 || errText) {
-      const ow = rt.width, oh = rt.height;
+    if (info && (frames % 20 === 0 || errText)) {
       info.style.color = errText ? '#ff8080' : '#7dff9a';
       info.textContent = 'Облака: ' + (errText ? 'ОШИБКА\n' + errText : 'работают')
-        + '\nкадров: ' + frames + ' | полотно ' + cv.width + '×' + cv.height + ' | глубина ' + ow + '×' + oh
+        + '\nкадров: ' + frames + ' | холст ' + cv.width + '×' + cv.height + ' (' + (auto ? 'авто, потолок ' + LEVELS[capLvl] : 'фикс.') + ') | глубина ' + rt.width + '×' + rt.height
+        + '\nкадр ' + (ema * 1000).toFixed(1) + ' мс (' + Math.round(1 / ema) + ' FPS)'
         + '\nзакрывающих объектов: ' + occN + ' | шейдеров: ' + (renderer.info.programs ? renderer.info.programs.length : '?') + ' | GL: ' + (glErr || 'ok')
-        + '\nточек с облаками на полотне: ' + hits + ' (0 — облаков в кадре нет)'
-        + '\ncamera far=' + (cam.far | 0) + ' fov=' + (cam.fov | 0) + ' | дождь ' + rainS.toFixed(2) + ' | uHull ' + u.uHull.value.x.toFixed(0) + '…' + u.uHull.value.y.toFixed(0)
-        + '\n?clouds=depth — карта глубины, ?clouds=debug — розовый экран, ?clouds=nodepth — без глубины, ?clouds=quiet — скрыть панель';
+        + '\nточек с облаками на холсте: ' + hits + ' (0 — облаков в кадре нет)'
+        + '\n?clouds=depth — карта глубины, ?clouds=debug — розовый экран, ?clouds=nodepth — без глубины, ?clouds=fixed — без автоподстройки';
     }
   }
 
   return {
-    objects: [], // облака рисуются отдельным полотном, в сцене игры их нет: прятать при SSAO/SSR не нужно
+    objects: [], // облака рисуются отдельным холстом, в сцене игры их нет: прятать при SSAO/SSR не нужно
 
     // Цвет облаков: освещённая часть (color) и «самосвет» (emissive), из которого получается цвет теней.
-    // Тени теперь заметно темнее и холоднее, чем раньше: так объём читается лучше. Ночью и в дождь main.js передаёт тёмные цвета.
+    // Ночью и в дождь main.js передаёт тёмные цвета.
     setLook(color, emissive) {
       lit.copy(color);
       shade.copy(emissive).multiplyScalar(0.9).add(tmp.copy(color).multiplyScalar(0.08));
     },
 
     // Высоты уровня. Остальные поля (cx, cz, r) не нужны: облака заполняют весь мир, сетка бесконечная
-    setBands({ low, high: hi }) { field.low = low; field.high = hi; },
+    setBands({ low, high: hi }) { field.low = low; field.high = hi; cellT = -1; },
 
     // Дождь 0..1: облака сходятся в сплошную облачность, становятся крупнее, площе, ниже и быстрее
     setWeather(rain) { rainT = clamp(rain, 0, 1); },
 
-    // Чёткость облаков: сколько строк по вертикали у их полотна (240 — как игра, 480 — по умолчанию, 720 — максимум)
-    setResolution(lines) { cloudH = clamp(Math.round(lines) || cloudH, 120, 1080); resize(); },
+    // Потолок чёткости облаков: сколько строк по вертикали (270 / 360 / 480 / 720). Реальное разрешение подбирается само.
+    setResolution(lines) {
+      capLvl = levelOf(Math.round(lines) || 480);
+      if (!auto || lvl > capLvl) { lvl = auto ? capLvl : capLvl; cloudH = LEVELS[lvl]; resizeCanvas(); }
+      ban = 99; banUntil = 0;
+    },
 
     // t — время игры, с (нужно шейдеру для жизни облаков)
     update(dt, t) {
+      if (!cam) cam = opts.camera || scene.children.find((o) => o.isCamera) || null;
       const k = first ? 1 : 1 - Math.exp(-2 * dt);
       cur.low += (field.low - cur.low) * k;
       cur.high += (field.high - cur.high) * k;
@@ -505,7 +569,7 @@ export function createClouds(scene, opts = {}) {
       const wa = WIND_A + 0.18 * Math.sin(t * 0.07);
       windX += Math.cos(wa) * wind * dt; windZ += Math.sin(wa) * wind * dt;
       u.uWind.value.set(windX, windZ);
-      u.uTime.value = t; u.uRain.value = rainS; u.uMidK.value = midK;
+      u.uTime.value = t; u.uRain.value = rainS;
 
       // Высотные пояса: море облаков под уровнем, облака вокруг платформ, высокие над ними (в дождь ниже)
       const lo = cur.low, hi = cur.high, r = rainS;
@@ -523,10 +587,13 @@ export function createClouds(scene, opts = {}) {
       }
       u.uLit.value.copy(lit).multiply(sunTint).multiplyScalar(1.12);
       u.uShade.value.copy(shade);
+
+      refreshCells(t);
+      if (auto) autoScale(dt);
       renderNow();
     },
 
-    // Облака теперь рисуются сами, в конце update() (main.js вызывает его каждый кадр). Метод оставлен для совместимости.
+    // Облака рисуются сами, в конце update(). Метод оставлен для совместимости со старым main.js.
     render() {},
   };
 }
