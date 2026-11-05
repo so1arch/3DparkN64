@@ -13,10 +13,12 @@
 //     для почти прозрачных точек пропускаются, шаги луча растут с расстоянием.
 //   • В меню облака обновляются в четверть частоты кадров (под полупрозрачным меню этого не видно).
 //
-// Интерфейс для main.js (прежний):
-//   createClouds(scene, opts) -> { objects, setLook, setBands, setWeather, setResolution, update, render }
+// Интерфейс для main.js:
+//   createClouds(scene, opts) -> { objects, setLook, setBands, setWeather, setResolution, setOccHeight, update, render }
 //   opts: count/high — качество; height — потолок разрешения облаков (строк); occHeight — строк у игры (RES_H);
 //         maxDist — дальность, м; auto:false — без автоподстройки; parent — куда добавить холст (по умолчанию #game).
+//   setOccHeight(строк) — сообщить облакам, сколько строк у основного кадра игры (меняется в настройках «Разрешение»):
+//         карта глубины облаков должна быть ровно такого же размера, как кадр игры.
 //   markOccluder(obj) — пометить объект как «закрывающий облака» (необязательно: непрозрачные меши находятся сами).
 //
 // Адрес игры с параметрами: ?clouds=info (панель состояния), ?clouds=debug (розовый экран), ?clouds=depth (карта глубины),
@@ -299,7 +301,7 @@ void main() {
 }
 
 const NOOP = () => {};
-const STUB = { objects: [], setLook: NOOP, setBands: NOOP, setWeather: NOOP, setResolution: NOOP, update: NOOP, render: NOOP };
+const STUB = { objects: [], setLook: NOOP, setBands: NOOP, setWeather: NOOP, setResolution: NOOP, setOccHeight: NOOP, update: NOOP, render: NOOP };
 const LEVELS = [144, 180, 216, 270, 360, 480, 720, 1080]; // ступени разрешения холста облаков (строк)
 const levelOf = (lines) => { let k = 0; LEVELS.forEach((v, i) => { if (v <= lines) k = i; }); return k; };
 
@@ -308,7 +310,7 @@ export function createClouds(scene, opts = {}) {
   const qmode = (typeof location !== 'undefined' && /[?&]clouds=(\w+)/.exec(location.search) || [])[1] || '';
   const debug = qmode === 'debug' ? 1 : qmode === 'depth' ? 2 : 0;
   const SHOW_INFO = qmode === 'info';
-  const occH = opts.occHeight || 240;                 // строк у основного кадра игры (RES_H в main.js)
+  let occH = opts.occHeight || 240;                   // строк у основного кадра игры (RES_H в main.js); меняется через setOccHeight()
   const maxDist = opts.maxDist || (high ? 800 : 550); // дальность облаков, м
   const auto = opts.auto !== false && qmode !== 'fixed';
   let capLvl = levelOf(opts.height || (high ? 480 : 360));  // потолок разрешения: выбор игрока в настройках
@@ -546,11 +548,20 @@ export function createClouds(scene, opts = {}) {
     // Дождь 0..1: облака сходятся в сплошную облачность, становятся крупнее, площе, ниже и быстрее
     setWeather(rain) { rainT = clamp(rain, 0, 1); },
 
-    // Потолок чёткости облаков: сколько строк по вертикали (270 / 360 / 480 / 720). Реальное разрешение подбирается само.
+    // Потолок чёткости облаков: сколько строк по вертикали (270 / 360 / 480 / 720 / 1080). Реальное разрешение подбирается само.
     setResolution(lines) {
       capLvl = levelOf(Math.round(lines) || 480);
       if (!auto || lvl > capLvl) { lvl = auto ? capLvl : capLvl; cloudH = LEVELS[lvl]; resizeCanvas(); }
       ban = 99; banUntil = 0;
+    },
+
+    // Размер кадра игры (строк по вертикали) изменился, например в настройках «Разрешение».
+    // Карта глубины, по которой платформы закрывают облака, должна быть ровно такого же размера, как кадр игры.
+    setOccHeight(lines) {
+      const h = Math.max(2, Math.round(lines) || 240);
+      if (h === occH) return;
+      occH = h;
+      resizeDepth();
     },
 
     // t — время игры, с (нужно шейдеру для жизни облаков)
