@@ -4,9 +4,14 @@
 //   • Свой холст. Игра рисуется в 240 строк (стиль N64), облака рисуются отдельным холстом поверх неё в своём
 //     разрешении и сглаживаются браузером. Платформы закрывают облака через карту глубины (в разрешении игры):
 //     луч облака останавливается на платформе.
+//   • Карта глубины строится из отдельной мини-сцены (occScene): вся статика уровня склеена в ОДИН меш (один draw call),
+//     лифты — отдельные меши, которые каждый кадр повторяют положение оригиналов. main.js передаёт геометрию
+//     через setOccluders() при каждой сборке уровня.
 //   • Параметры облаков считает процессор, а не видеокарта. Мир разбит на ячейки, в каждой живёт одно облако.
 //     Раз в 0.1 с процессор пересчитывает облака вокруг камеры (16x16 ячеек на слой) и кладёт в три маленькие
 //     текстуры. Видеокарта на каждом шаге луча только читает 4 ячейки из текстуры, без хешей и тригонометрии.
+//   • Луч шагает только внутри облачных плит (высотных поясов слоёв): воздух между плитами перепрыгивается
+//     без траты бюджета шагов.
 //   • Разрешение облаков привязано к разрешению игры (настройка «Разрешение»): холст в 1.5 раза чётче кадра игры,
 //     от 360 до 540 строк (выше нельзя: цена растёт вместе с числом пикселей). Старая автоподстройка по FPS (холст сам уменьшался до 144 строк, из-за чего облака
 //     становились очень пиксельными) включается только адресом ?clouds=auto.
@@ -15,12 +20,14 @@
 //   • В меню облака обновляются в четверть частоты кадров (под полупрозрачным меню этого не видно).
 //
 // Интерфейс для main.js:
-//   createClouds(scene, opts) -> { objects, setLook, setBands, setWeather, setResolution, setOccHeight, update, render }
+//   createClouds(scene, opts) -> { objects, setLook, setBands, setWeather, setResolution, setOccHeight, setOccluders, update, render }
 //   opts: count/high — качество; height — потолок разрешения облаков (строк); occHeight — строк у игры (RES_H);
 //         maxDist — дальность, м; auto:false — без автоподстройки; parent — куда добавить холст (по умолчанию #game).
 //   setOccHeight(строк) — сообщить облакам, сколько строк у основного кадра игры (меняется в настройках «Разрешение»):
 //         карта глубины облаков должна быть ровно такого же размера, как кадр игры.
-//   markOccluder(obj) — пометить объект как «закрывающий облака» (необязательно: непрозрачные меши находятся сами).
+//   setOccluders(statics, dynamics) — statics: меши платформ (склеиваются в один), dynamics: движущиеся меши (лифты).
+//         Вызывать после каждой пересборки уровня или изменения набора платформ.
+//   markOccluder(obj) — оставлено для совместимости, больше ничего не делает по сути (метки слоя не используются).
 //
 // Адрес игры с параметрами: ?clouds=info (панель состояния), ?clouds=debug (розовый экран), ?clouds=depth (карта глубины),
 // ?clouds=nodepth (без учёта платформ), ?clouds=auto (старая автоподстройка разрешения облаков по FPS).
@@ -220,6 +227,27 @@ float clearF(vec3 p) {
 float hg(float c, float g) { float g2 = g * g; return (1.0 - g2) / pow(1.0 + g2 - 2.0 * g * c, 1.5); }
 float ign(vec2 fc) { return fract(52.9829189 * fract(dot(fc, vec2(0.06711056, 0.00583715)))); }
 
+// Интервал луча внутри плиты [band.x, band.z]; пустой интервал = (1e9, -1e9)
+vec2 slabIv(float oy, float dy, vec3 band, float t0, float t1) {
+  float a, b;
+  if (abs(dy) < 1e-4) {
+    if (oy < band.x || oy > band.z) return vec2(1e9, -1e9);
+    a = t0; b = t1;
+  } else {
+    float ta = (band.x - oy) / dy, tb = (band.z - oy) / dy;
+    a = max(min(ta, tb), t0); b = min(max(ta, tb), t1);
+  }
+  return b > a ? vec2(a, b) : vec2(1e9, -1e9);
+}
+// Ближайшая точка t' >= t, лежащая в одной из плит (1e9 — луч кончился)
+float nextT(float t, vec2 i0, vec2 i1, vec2 i2) {
+  float r = 1e9;
+  if (t <= i0.y) r = min(r, max(t, i0.x));
+  if (t <= i1.y) r = min(r, max(t, i1.x));
+  if (t <= i2.y) r = min(r, max(t, i2.x));
+  return r;
+}
+
 void main() {
   // Глубина платформ (в разрешении игры): расстояние до ближайшей платформы вдоль экранного пикселя
   float dep = texture(uDepth, vUv).r;
@@ -232,17 +260,15 @@ void main() {
   vec3 rd = normalize(vRay);
   vec3 ro = uCamPos;
 
-  // Луч работает только внутри высотного пояса, где вообще бывают облака
   float t0 = 0.0, t1 = uMaxDist;
-  if (abs(rd.y) < 1e-4) {
-    if (ro.y < uHull.x || ro.y > uHull.y) discard;
-  } else {
-    float ta = (uHull.x - ro.y) / rd.y, tb = (uHull.y - ro.y) / rd.y;
-    t0 = max(t0, min(ta, tb)); t1 = min(t1, max(ta, tb));
-  }
-  // Платформа (или игрок) на пути луча: дальше неё облако не рисуем
+  // Платформа на пути луча: дальше неё облако не рисуем
   if (uUseDepth > 0.5 && dep < 0.99999) t1 = min(t1, vz / max(dot(rd, uCamFwd), 1e-3));
-  if (t1 <= t0) discard;
+  // Луч работает только внутри облачных плит (поясов слоёв); воздух между плитами пропускаем
+  vec2 iv0 = slabIv(ro.y, rd.y, uBand0, t0, t1);
+  vec2 iv1 = slabIv(ro.y, rd.y, uBand1, t0, t1);
+  vec2 iv2 = slabIv(ro.y, rd.y, uBand2, t0, t1);
+  float tStart = min(iv0.x, min(iv1.x, iv2.x));
+  if (tStart >= 1e8) discard; // луч не задевает ни одну плиту
 
   // Фаза рассеяния зависит только от направления луча: считаем один раз на три «октавы»
   float cosT = dot(rd, uSunDir);
@@ -250,11 +276,12 @@ void main() {
   float ph1 = mix(hg(cosT, -0.12), hg(cosT, 0.39), 0.3);
   float ph2 = mix(hg(cosT, -0.072), hg(cosT, 0.234), 0.3);
 
-  float t = t0 + ign(gl_FragCoord.xy) * clamp(t0 * STEP_K, STEP_MIN, STEP_MAX);
+  float t = tStart + ign(gl_FragCoord.xy) * clamp(tStart * STEP_K, STEP_MIN, STEP_MAX);
   float T = 1.0, Tacc = 0.0, Aacc = 0.0, tFirst = -1.0;
   vec3 Cacc = vec3(0.0), lastCs = uLit * 0.85;
   for (int i = 0; i < STEPS; i++) {
-    if (t > t1 || T < 0.03) break;
+    t = nextT(t, iv0, iv1, iv2);            // воздух между плитами перепрыгиваем без траты шага
+    if (t >= 1e8 || T < 0.05) break;
     float sl = clamp(t * STEP_K, STEP_MIN, STEP_MAX);   // шаг растёт с расстоянием: вдали пиксель всё равно крупный
     vec3 p = ro + rd * t;
     float h01;
@@ -302,7 +329,7 @@ void main() {
 }
 
 const NOOP = () => {};
-const STUB = { objects: [], setLook: NOOP, setBands: NOOP, setWeather: NOOP, setResolution: NOOP, setOccHeight: NOOP, update: NOOP, render: NOOP };
+const STUB = { objects: [], setLook: NOOP, setBands: NOOP, setWeather: NOOP, setResolution: NOOP, setOccHeight: NOOP, setOccluders: NOOP, update: NOOP, render: NOOP };
 const LEVELS = [144, 180, 216, 270, 360, 480, 720, 1080]; // ступени разрешения холста облаков (строк)
 const levelOf = (lines) => { let k = 0; LEVELS.forEach((v, i) => { if (v <= lines) k = i; }); return k; };
 
@@ -378,6 +405,48 @@ export function createClouds(scene, opts = {}) {
   addEventListener('resize', () => { resizeCanvas(); resizeDepth(); });
   resizeCanvas(); resizeDepth();
   const occMat = new THREE.MeshBasicMaterial({ colorWrite: false, fog: false }); // платформы только в буфер глубины
+
+  // ── Закрывающая геометрия: одна «склеенная» статика + лифты ──
+  // Проход глубины рисует не всю игровую сцену, а только эту мини-сцену: статика уровня одним draw call + несколько лифтов.
+  let occN = 0;
+  const occScene = new THREE.Scene();
+  let occStatic = null, occDyn = [];
+  const _v = new THREE.Vector3();
+  // statics — меши платформ (склеиваются в один меш, нужны только позиции), dynamics — меши, которые двигаются (лифты)
+  function setOccluders(statics, dynamics = []) {
+    if (occStatic) { occScene.remove(occStatic); occStatic.geometry.dispose(); occStatic = null; }
+    for (const d of occDyn) occScene.remove(d.mesh);
+    occDyn = [];
+    const geos = statics.map((m) => (m.geometry.index ? m.geometry.toNonIndexed() : m.geometry));
+    let n = 0;
+    for (const g of geos) n += g.attributes.position.count;
+    if (n) {
+      const out = new Float32Array(n * 3);
+      let o = 0;
+      statics.forEach((m, k) => {
+        const a = geos[k].attributes.position;
+        m.updateWorldMatrix(true, false);
+        for (let i = 0; i < a.count; i++) {
+          _v.fromBufferAttribute(a, i).applyMatrix4(m.matrixWorld);
+          out[o++] = _v.x; out[o++] = _v.y; out[o++] = _v.z;
+        }
+      });
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(out, 3));
+      occStatic = new THREE.Mesh(g, occMat);
+      occStatic.matrixAutoUpdate = false; occStatic.frustumCulled = false;
+      occScene.add(occStatic);
+    }
+    for (const src of dynamics) {
+      const m = new THREE.Mesh(src.geometry, occMat); // геометрию делим с оригиналом, не удаляем
+      m.matrixAutoUpdate = false; m.frustumCulled = false;
+      occScene.add(m); occDyn.push({ mesh: m, src });
+    }
+    occN = occDyn.length + (occStatic ? 1 : 0);
+  }
+  function syncDynamic() {
+    for (const d of occDyn) { d.src.updateWorldMatrix(true, false); d.mesh.matrix.copy(d.src.matrixWorld); d.mesh.matrixWorldNeedsUpdate = true; }
+  }
 
   const field = { low: -10, high: 10 };  // высоты уровня, под которые подстраиваемся (setBands)
   const cur = { low: -10, high: 10 };    // плавно догоняют field
@@ -477,7 +546,7 @@ export function createClouds(scene, opts = {}) {
   };
 
   // ── Отрисовка: сама, из update() ─────────────────────────────
-  let frames = 0, tick = 0, menuTick = 0, occN = 0, hits = '—', errText = '', errCount = 0, glErr = 0, info = null;
+  let frames = 0, menuTick = 0, hits = '—', errText = '', errCount = 0, glErr = 0, info = null;
   const showPanel = () => {
     if (info) return;
     info = document.createElement('pre');
@@ -485,32 +554,19 @@ export function createClouds(scene, opts = {}) {
     document.body.append(info);
   };
   if (SHOW_INFO) showPanel();
-  // Всё непрозрачное в сцене закрывает облака (платформы, лифты, игрок, монеты). Метки обновляются раз в 10 кадров.
-  function syncOccluders() {
-    let n = 0;
-    scene.traverse((o) => {
-      if (!o.isMesh || o.isInstancedMesh) return;
-      const m = o.material;
-      const solid = m && !Array.isArray(m) && !m.transparent && !m.wireframe && m.visible !== false && !m.isShaderMaterial;
-      if (solid) { o.layers.enable(OCC_LAYER); n++; } else if (o.layers.isEnabled(OCC_LAYER)) o.layers.disable(OCC_LAYER);
-    });
-    occN = n;
-  }
   function renderNow() {
     if (!cam || !rt || errCount > 3) return;
     // В меню (оно полупрозрачное) облака обновляем в четверть частоты: холст сохраняет прошлую картинку
     if (document.body.classList.contains('menu') && (menuTick++ & 3)) return;
     try {
-      if (tick++ % 10 === 0) syncOccluders();
       cam.updateWorldMatrix(true, false);
-      const bg = scene.background, om = scene.overrideMaterial, mask = cam.layers.mask;
-      scene.background = null; scene.overrideMaterial = occMat; cam.layers.set(OCC_LAYER);
+      syncDynamic();
+      // Карта глубины: один draw call на статику + по одному на лифт
       try {
         renderer.setRenderTarget(rt);
-        renderer.render(scene, cam);
+        renderer.render(occScene, cam);
       } finally {
         renderer.setRenderTarget(null);
-        scene.background = bg; scene.overrideMaterial = om; cam.layers.mask = mask;
       }
       renderer.render(cloudScene, cam);
       frames++;
@@ -533,7 +589,7 @@ export function createClouds(scene, opts = {}) {
       info.textContent = 'Облака: ' + (errText ? 'ОШИБКА\n' + errText : 'работают')
         + '\nкадров: ' + frames + ' | холст ' + cv.width + '×' + cv.height + ' (' + (auto ? 'авто, потолок ' + LEVELS[capLvl] : 'привязано к игре ' + occH + 'p') + ') | глубина ' + rt.width + '×' + rt.height
         + '\nкадр ' + (ema * 1000).toFixed(1) + ' мс (' + Math.round(1 / ema) + ' FPS)'
-        + '\nзакрывающих объектов: ' + occN + ' | шейдеров: ' + (renderer.info.programs ? renderer.info.programs.length : '?') + ' | GL: ' + (glErr || 'ok')
+        + '\nзакрывающих мешей (draw call): ' + occN + ' | шейдеров: ' + (renderer.info.programs ? renderer.info.programs.length : '?') + ' | GL: ' + (glErr || 'ok')
         + '\nточек с облаками на холсте: ' + hits + ' (0 — облаков в кадре нет)'
         + '\n?clouds=depth — карта глубины, ?clouds=debug — розовый экран, ?clouds=nodepth — без глубины, ?clouds=auto — автоподстройка по FPS';
     }
@@ -541,6 +597,9 @@ export function createClouds(scene, opts = {}) {
 
   return {
     objects: [], // облака рисуются отдельным холстом, в сцене игры их нет: прятать при SSAO/SSR не нужно
+
+    // Геометрия, которая закрывает облака: statics склеиваются в один меш, dynamics (лифты) повторяют положение оригиналов
+    setOccluders,
 
     // Цвет облаков: освещённая часть (color) и «самосвет» (emissive), из которого получается цвет теней.
     // Ночью и в дождь main.js передаёт тёмные цвета.
