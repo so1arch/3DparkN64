@@ -56,7 +56,8 @@ const HIGH = QUALITY === 'high';
 // ── Рендер ─────────────────────────────────────────────────────
 let RES_H = RES_SET || 240; // реальное число строк кадра; пересчитывается в resize()
 let cloudsApi = null;       // облака создаются ниже; resize() сообщает им размер кадра, когда они уже есть
-const renderer = new THREE.WebGLRenderer({ antialias: false });
+// powerPreference такой же, как у облачного рендерера: на ноутбуках с двумя видеокартами оба контекста окажутся на одном GPU
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
 renderer.setPixelRatio(1);
 $('game').appendChild(renderer.domElement);
 
@@ -425,6 +426,10 @@ function addPlat(a,i,th){
 }
 function addCoin([x,y,z],i,gi){const c=new THREE.Mesh(coinGeo,coinMat);c.position.set(x,y,z);c.userData={k:'c',i,gi};levelGroup.add(c);coins.push(c);return c;}
 let hoverObj=null;
+// Передать облакам геометрию, которая их закрывает: платформы (склеиваются в один меш) и лифты (повторяют движение оригиналов)
+function syncCloudOccluders(){
+  clouds.setOccluders(platMeshes,ents.list.filter((o)=>o.type===4).map((o)=>o.root));
+}
 function buildLevel(lv) {
   scene.remove(levelGroup);
   levelGroup.traverse((o)=>{if(o.userData.own)o.geometry.dispose();if(o.userData.ownMat)o.material.dispose();});
@@ -447,6 +452,7 @@ function buildLevel(lv) {
   initInf(lv);
   refreshShapeButtons();
   gulls.setLevel(lv);
+  syncCloudOccluders();
 }
 
 // ── Игрок ──────────────────────────────────────────────────────
@@ -736,7 +742,7 @@ function updateInf(dt){
   }
   const lim=infState.top-INF_BEHIND;
   if(infState.first<lim){pruneInf(lim);changed=true;}
-  if(changed)gulls.syncInf(L,infState.first); // чайки у новых платформ впереди, у убранных позади их больше нет
+  if(changed){gulls.syncInf(L,infState.first);syncCloudOccluders();} // чайки у новых платформ впереди, у убранных позади их больше нет; облака получают новую геометрию глубины
 }
 // Записать счёт (рекорд хранится как число платформ: чем больше, тем лучше)
 function commitInf(){
