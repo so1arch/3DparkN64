@@ -12,6 +12,9 @@
 //     текстуры. Видеокарта на каждом шаге луча только читает 4 ячейки из текстуры, без хешей и тригонометрии.
 //   • Луч шагает только внутри облачных плит (высотных поясов слоёв): воздух между плитами перепрыгивается
 //     без траты бюджета шагов.
+//   • Пропуск пустого пространства (layerNext/nextCloud в шейдере): луч ведётся по квадратам сетки, и там, где он
+//     не задевает ни одного эллипсоида облака, весь участок перепрыгивается. Точно: плотность вне эллипсоидов равна нулю,
+//     картинка не меняется (проверено численно на 6000 случайных лучей). Бюджет шагов тратится только на сами облака.
 //   • Разрешение облаков привязано к разрешению игры (настройка «Разрешение»): холст в 1.5 раза чётче кадра игры,
 //     от 360 до 540 строк (выше нельзя: цена растёт вместе с числом пикселей). Старая автоподстройка по FPS (холст сам уменьшался до 144 строк, из-за чего облака
 //     становились очень пиксельными) включается только адресом ?clouds=auto.
@@ -248,6 +251,64 @@ float nextT(float t, vec2 i0, vec2 i1, vec2 i2) {
   return r;
 }
 
+// ── Пропуск пустого пространства (точный, картинку не меняет) ──────────────────────────────
+// Плотность слоя в точке зависит только от 4 ближайших ячеек, а вне эллипсоида облака она строго равна нулю.
+// Поэтому луч можно вести квадрат за квадратом (квадрат = область, где набор из 4 ячеек не меняется) и в каждом
+// проверять только эллипсоиды этих ячеек: если луч их не задевает, весь квадрат перепрыгивается целиком.
+// Возвращает ближайшее t' >= t в плите слоя (интервал iv), где плотность ещё может быть ненулевой; 1e9 — больше нигде
+// (или не раньше, чем limit: так слои, уже уступающие лучшему ответу, дальше не ищем).
+float layerNext(vec3 ro, vec3 rd, float t, vec2 iv, float C, float wmul, int L, float limit) {
+  float s = max(t, iv.x);
+  float hi = min(iv.y, limit);
+  if (s >= hi) return 1e9;
+  vec2 qo = ro.xz - uWind * wmul;   // та же система координат, что и в layerDens: сетка едет вместе с ветром
+  vec2 qd = rd.xz;
+  for (int j = 0; j < 8; j++) {
+    vec2 g = (qo + qd * s) / C - 0.5;
+    vec2 cf = floor(g);
+    // где луч выйдет из квадрата (по осям X и Z)
+    vec2 tb = vec2(1e9);
+    if (qd.x > 1e-6) tb.x = (cf.x + 1.0 - g.x) * C / qd.x;
+    else if (qd.x < -1e-6) tb.x = (cf.x - g.x) * C / qd.x;
+    if (qd.y > 1e-6) tb.y = (cf.y + 1.0 - g.y) * C / qd.y;
+    else if (qd.y < -1e-6) tb.y = (cf.y - g.y) * C / qd.y;
+    float tEx = s + min(tb.x, tb.y);
+    float tEnd = min(tEx, hi);
+    float best = 1e9;
+    ivec2 c0 = ivec2(cf);
+    for (int n = 0; n < 4; n++) {
+      ivec2 c = c0 + ivec2(n & 1, n >> 1);
+      ivec2 tc = ivec2(c.x & (NC - 1), (c.y & (NC - 1)) + L * NC);
+      vec4 A = texelFetch(uCellA, tc, 0);
+      if (A.z <= 0.0) continue;                      // в ячейке нет облака
+      vec4 B = texelFetch(uCellB, tc, 0);
+      float Ry = 0.85 * B.x, cy = B.y + 0.3 * B.x;   // эллипсоид облака, как в layerDens
+      vec3 m = vec3((qo.x - A.x) / A.z, (ro.y - cy) / Ry, (qo.y - A.y) / A.w);
+      vec3 d = vec3(qd.x / A.z, rd.y / Ry, qd.y / A.w);
+      float a = dot(d, d), b = dot(m, d), h = b * b - a * (dot(m, m) - 1.0);
+      if (h <= 0.0) continue;                        // луч мимо эллипсоида
+      h = sqrt(h);
+      float ta = (-b - h) / a, tz = (-b + h) / a;
+      if (abs(rd.y) > 1e-6) {                        // плоское дно облака: ниже B.y плотности нет
+        float tY = (B.y - ro.y) / rd.y;
+        if (rd.y > 0.0) ta = max(ta, tY); else tz = min(tz, tY);
+      } else if (ro.y < B.y) continue;
+      ta = max(ta, s); tz = min(tz, tEnd);           // только внутри текущего квадрата и плиты
+      if (ta < tz) best = min(best, ta);
+    }
+    if (best < 1e9) return best;
+    s = tEx + 0.05;                                  // квадрат пуст: переходим в следующий
+    if (s >= hi) return 1e9;
+  }
+  return s;                                          // длинный пустой участок: дальше пойдём обычными шагами
+}
+float nextCloud(vec3 ro, vec3 rd, float t, vec2 i0, vec2 i1, vec2 i2) {
+  float r = layerNext(ro, rd, t, i0, ${f1(LAYERS[0].C)}, ${f2(LAYERS[0].wind)}, 0, 1e9);
+  r = min(r, layerNext(ro, rd, t, i1, ${f1(LAYERS[1].C)}, ${f2(LAYERS[1].wind)}, 1, r));
+  r = min(r, layerNext(ro, rd, t, i2, ${f1(LAYERS[2].C)}, ${f2(LAYERS[2].wind)}, 2, r));
+  return r;
+}
+
 void main() {
   // Глубина платформ (в разрешении игры): расстояние до ближайшей платформы вдоль экранного пикселя
   float dep = texture(uDepth, vUv).r;
@@ -276,11 +337,20 @@ void main() {
   float ph1 = mix(hg(cosT, -0.12), hg(cosT, 0.39), 0.3);
   float ph2 = mix(hg(cosT, -0.072), hg(cosT, 0.234), 0.3);
 
-  float t = tStart + ign(gl_FragCoord.xy) * clamp(tStart * STEP_K, STEP_MIN, STEP_MAX);
+  float jit = ign(gl_FragCoord.xy);
+  float t = tStart + jit * clamp(tStart * STEP_K, STEP_MIN, STEP_MAX);
   float T = 1.0, Tacc = 0.0, Aacc = 0.0, tFirst = -1.0;
   vec3 Cacc = vec3(0.0), lastCs = uLit * 0.85;
+  bool air = true;   // прошлая точка была пустой: имеет смысл искать, где начнётся следующее облако
+  int hold = 0;      // после прыжка к облаку несколько шагов идём обычным ходом, чтобы не искать заново
   for (int i = 0; i < STEPS; i++) {
-    t = nextT(t, iv0, iv1, iv2);            // воздух между плитами перепрыгиваем без траты шага
+    if (air && hold <= 0) {
+      float tn = nextCloud(ro, rd, t, iv0, iv1, iv2);   // перепрыгиваем пустые квадраты и воздух между облаками
+      if (tn >= 1e8) break;                              // облаков дальше нет: луч закончен
+      if (tn > t) { t = tn + jit * clamp(tn * STEP_K, STEP_MIN, STEP_MAX); hold = 2; } // сдвиг jit: без «слоёв» вдоль границы облака
+    }
+    hold--;
+    t = nextT(t, iv0, iv1, iv2);            // не выходим за плиты и платформу
     if (t >= 1e8 || T < 0.05) break;
     float sl = clamp(t * STEP_K, STEP_MIN, STEP_MAX);   // шаг растёт с расстоянием: вдали пиксель всё равно крупный
     vec3 p = ro + rd * t;
@@ -311,6 +381,7 @@ void main() {
       T *= 1.0 - a;
       if (tFirst < 0.0 && Aacc > 0.1) tFirst = t;
     }
+    air = d <= 0.002;
     t += sl;
   }
   if (Aacc < 0.01) discard;
