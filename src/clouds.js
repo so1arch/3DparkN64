@@ -15,6 +15,11 @@
 //   • Пропуск пустого пространства (layerNext/nextCloud в шейдере): луч ведётся по квадратам сетки, и там, где он
 //     не задевает ни одного эллипсоида облака, весь участок перепрыгивается. Точно: плотность вне эллипсоидов равна нулю,
 //     картинка не меняется (проверено численно на 6000 случайных лучей). Бюджет шагов тратится только на сами облака.
+//   • Временная сборка (по умолчанию включена, см. renderTemporal): каждый кадр рэймарчинг считается в 1/4 пикселей (блоки 2x2,
+//     по очереди), остальное берётся из прошлого кадра с репроекцией по расстоянию до облака и поправкой на ветер. История
+//     зажимается по свежим соседним образцам, у краёв платформ пиксель пересчитывается целиком, а при быстром повороте камеры
+//     кадр считается полностью (без потери качества). Шум рэймарчинга усредняется по кадрам: на статике и в беге картинка
+//     ближе к «идеальной», чем у прямого пути. Выключить: ?clouds=notemporal (или clouds.setTemporal(false)).
 //   • Разрешение облаков привязано к разрешению игры (настройка «Разрешение»): холст в 1.5 раза чётче кадра игры,
 //     от 360 до 540 строк (выше нельзя: цена растёт вместе с числом пикселей). Старая автоподстройка по FPS (холст сам уменьшался до 144 строк, из-за чего облака
 //     становились очень пиксельными) включается только адресом ?clouds=auto.
@@ -23,7 +28,7 @@
 //   • В меню облака обновляются в четверть частоты кадров (под полупрозрачным меню этого не видно).
 //
 // Интерфейс для main.js:
-//   createClouds(scene, opts) -> { objects, setLook, setBands, setWeather, setResolution, setOccHeight, setOccluders, update, render }
+//   createClouds(scene, opts) -> { objects, setLook, setBands, setWeather, setResolution, setOccHeight, setOccluders, setTemporal, debugInfo, update, render }
 //   opts: count/high — качество; height — потолок разрешения облаков (строк); occHeight — строк у игры (RES_H);
 //         maxDist — дальность, м; auto:false — без автоподстройки; parent — куда добавить холст (по умолчанию #game).
 //   setOccHeight(строк) — сообщить облакам, сколько строк у основного кадра игры (меняется в настройках «Разрешение»):
@@ -33,7 +38,8 @@
 //   markOccluder(obj) — оставлено для совместимости, больше ничего не делает по сути (метки слоя не используются).
 //
 // Адрес игры с параметрами: ?clouds=info (панель состояния), ?clouds=debug (розовый экран), ?clouds=depth (карта глубины),
-// ?clouds=nodepth (без учёта платформ), ?clouds=auto (старая автоподстройка разрешения облаков по FPS).
+// ?clouds=nodepth (без учёта платформ), ?clouds=auto (старая автоподстройка разрешения облаков по FPS),
+// ?clouds=notemporal (прямой рэймарчинг каждого пикселя, без временной сборки).
 
 import * as THREE from 'three';
 
@@ -132,16 +138,7 @@ function makeCellTex() {
 }
 
 // ── Шейдеры ────────────────────────────────────────────────────
-const VERT = `
-uniform mat3 uCamRot;
-uniform vec2 uTan;
-varying vec3 vRay;
-varying vec2 vUv;
-void main() {
-  vUv = position.xy * 0.5 + 0.5;
-  vRay = uCamRot * vec3(position.x * uTan.x, position.y * uTan.y, -1.0);
-  gl_Position = vec4(position.xy, 0.0, 1.0);
-}`;
+const VERT = `void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }`;
 
 const f1 = (x) => x.toFixed(1), f2 = (x) => x.toFixed(2), f3 = (x) => x.toFixed(3);
 const call = (i) => `layerDens(p, ${f1(LAYERS[i].C)}, uBand${i}, ${f2(LAYERS[i].wind)}, ${i}, full, hAcc)`;
@@ -160,12 +157,22 @@ precision highp sampler2D;
 precision highp sampler3D;
 uniform sampler3D uNoise;
 uniform sampler2D uDepth, uCellA, uCellB, uCellC;
-uniform float uTime, uRain, uMaxDist, uTubeOn, uDebug, uUseDepth;
-uniform vec2 uWind, uFogRange, uNearFar, uHull;
+uniform float uTime, uRain, uMaxDist, uTubeOn, uDebug, uUseDepth, uStride, uJit;
+uniform vec2 uWind, uFogRange, uNearFar, uHull, uTan, uFullSize, uSlot;
+uniform mat3 uCamRot;
 uniform vec3 uCamPos, uCamFwd, uFocus, uLit, uShade, uGlow, uSunDir, uFogColor, uBand0, uBand1, uBand2;
-varying vec3 vRay;
-varying vec2 vUv;
+#ifdef TEMPORAL
+layout(location = 1) out highp vec4 gData;   // x — расстояние до облака, y — до конца облака, z — «покрытие» луча (см. marchRay)
+#endif
+#if defined(RESOLVE) || defined(FIXUP)
+uniform sampler2D uMQ0, uMQ1, uH0, uH1;      // свежая четверть кадра и история прошлого кадра
+uniform vec3 uPrevCamPos;
+uniform mat3 uPrevCamRot;
+uniform vec2 uPrevTan, uWindD;
+uniform float uBlend, uBlend2;
+#endif
 
+#ifndef RESOLVE
 // Плотность одного слоя в точке p. Облака ячеек (их параметры лежат в таблице uCellA..C) считает процессор.
 // Точку задевают облака только из четырёх ближайших ячеек. band: x — низ самых нижних оснований, z — потолок слоя.
 // full=false — дешёвый вариант без мелкой лепки (для луча света и дальних шагов). hAcc копит «высоту внутри облака».
@@ -309,27 +316,32 @@ float nextCloud(vec3 ro, vec3 rd, float t, vec2 i0, vec2 i1, vec2 i2) {
   return r;
 }
 
-void main() {
-  // Глубина платформ (в разрешении игры): расстояние до ближайшей платформы вдоль экранного пикселя
-  float dep = texture(uDepth, vUv).r;
+#endif
+
+// Расстояние вдоль луча до ближайшей платформы (uMaxDist — платформы нет)
+float platT(float dep, vec3 rd) {
+  if (uUseDepth < 0.5 || dep >= 0.99999) return uMaxDist;
   float zn = dep * 2.0 - 1.0;
   float vz = 2.0 * uNearFar.x * uNearFar.y / (uNearFar.y + uNearFar.x - zn * (uNearFar.y - uNearFar.x));
-  // Проверка тракта отрисовки: ?clouds=debug — сплошной розовый экран, ?clouds=depth — карта глубины (серое — платформы, зелёное — пусто)
-  if (uDebug > 0.5 && uDebug < 1.5) { gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }
-  if (uDebug > 1.5) { gl_FragColor = dep < 0.99999 ? vec4(vec3(clamp(vz / 60.0, 0.0, 1.0)), 1.0) : vec4(0.0, 0.35, 0.0, 1.0); return; }
+  return min(uMaxDist, vz / max(dot(rd, uCamFwd), 1e-3));
+}
 
-  vec3 rd = normalize(vRay);
+#ifndef RESOLVE
+// Рэймарчинг одного луча. rd — направление, dep — глубина платформ в пикселе, fcInt — целые координаты пикселя полного кадра.
+// Возвращает ПРЕМУЛЬТИПЛИЦИРОВАННЫЙ линейный цвет (alpha 0 — облака нет).
+// data: x — расстояние до первого попадания, y — до конца облака, z — «покрытие»: до какого расстояния луч искал облака
+// (расстояние до платформы; 60000, если луч стал почти непрозрачным и дальше уже ничего не изменит).
+// По data временный проход решает, годится ли история: если платформа рядом сдвинулась, историю этого пикселя выбрасывают.
+vec4 marchRay(vec3 rd, float dep, vec2 fcInt, out vec4 data) {
   vec3 ro = uCamPos;
-
-  float t0 = 0.0, t1 = uMaxDist;
-  // Платформа на пути луча: дальше неё облако не рисуем
-  if (uUseDepth > 0.5 && dep < 0.99999) t1 = min(t1, vz / max(dot(rd, uCamFwd), 1e-3));
+  float t0 = 0.0;
+  float t1 = platT(dep, rd);   // платформа на пути луча: дальше неё облако не рисуем
   // Луч работает только внутри облачных плит (поясов слоёв); воздух между плитами пропускаем
   vec2 iv0 = slabIv(ro.y, rd.y, uBand0, t0, t1);
   vec2 iv1 = slabIv(ro.y, rd.y, uBand1, t0, t1);
   vec2 iv2 = slabIv(ro.y, rd.y, uBand2, t0, t1);
   float tStart = min(iv0.x, min(iv1.x, iv2.x));
-  if (tStart >= 1e8) discard; // луч не задевает ни одну плиту
+  if (tStart >= 1e8) { data = vec4(0.0, 0.0, t1, 0.0); return vec4(0.0); } // луч не задевает ни одну плиту
 
   // Фаза рассеяния зависит только от направления луча: считаем один раз на три «октавы»
   float cosT = dot(rd, uSunDir);
@@ -337,9 +349,10 @@ void main() {
   float ph1 = mix(hg(cosT, -0.12), hg(cosT, 0.39), 0.3);
   float ph2 = mix(hg(cosT, -0.072), hg(cosT, 0.234), 0.3);
 
-  float jit = ign(gl_FragCoord.xy);
+  float jit = ign(fcInt + 0.5 + vec2(5.588238 * uJit));   // uJit — номер кадра (во временном режиме); сдвиг координат, а не значения: так шум не даёт диагональных полос
   float t = tStart + jit * clamp(tStart * STEP_K, STEP_MIN, STEP_MAX);
-  float T = 1.0, Tacc = 0.0, Aacc = 0.0, tFirst = -1.0;
+  float T = 1.0, Tacc = 0.0, Aacc = 0.0, tFirst = -1.0, tLast = 0.0;
+  bool opaque = false;
   vec3 Cacc = vec3(0.0), lastCs = uLit * 0.85;
   bool air = true;   // прошлая точка была пустой: имеет смысл искать, где начнётся следующее облако
   int hold = 0;      // после прыжка к облаку несколько шагов идём обычным ходом, чтобы не искать заново
@@ -351,7 +364,8 @@ void main() {
     }
     hold--;
     t = nextT(t, iv0, iv1, iv2);            // не выходим за плиты и платформу
-    if (t >= 1e8 || T < 0.05) break;
+    if (t >= 1e8) break;
+    if (T < 0.05) { opaque = true; break; }
     float sl = clamp(t * STEP_K, STEP_MIN, STEP_MAX);   // шаг растёт с расстоянием: вдали пиксель всё равно крупный
     vec3 p = ro + rd * t;
     float h01;
@@ -380,27 +394,161 @@ void main() {
       Cacc += lastCs * w; Tacc += t * w; Aacc += w;
       T *= 1.0 - a;
       if (tFirst < 0.0 && Aacc > 0.1) tFirst = t;
+      tLast = min(t + sl, t1);
     }
     air = d <= 0.002;
     t += sl;
   }
-  if (Aacc < 0.01) discard;
+  float cov = opaque ? 60000.0 : t1;
+  if (Aacc < 0.01) { data = vec4(0.0, tLast, cov, 0.0); return vec4(0.0); }
 
   vec3 col = Cacc / Aacc;
   float tHit = tFirst > 0.0 ? tFirst : Tacc / Aacc;
   // Воздушная дымка: начинается там, где у платформ уже густой туман, и растёт до края дальности
   col = mix(col, uFogColor, smoothstep(uFogRange.y * 0.8, uMaxDist, tHit) * 0.65);
   float aOut = clamp(Aacc * 1.05, 0.0, 1.0) * (1.0 - smoothstep(0.82 * uMaxDist, uMaxDist, tHit));
-  if (aOut < 0.01) discard;
+  if (aOut < 0.01) { data = vec4(0.0, tLast, cov, 0.0); return vec4(0.0); }
 
-  gl_FragColor = vec4(col, aOut);
+  data = vec4(tHit, tLast, cov, 0.0);
+  return vec4(col * aOut, aOut);
+}
+#endif
+
+#if defined(RESOLVE) || defined(FIXUP)
+// Годится ли история этого пикселя. Точка облака переносится в прошлый кадр по расстоянию до облака (его берём у свежего образца
+// блока 2x2) с поправкой на ветер; история годится, если точка попала в кадр и платформа рядом не поменялась так,
+// что облако перед ней теперь должно быть другим. puv — где точка была в прошлом кадре, hd — данные истории там, nd — данные свежего образца блока.
+bool historyOk(ivec2 ip, vec3 rd, float t1, out vec2 puv, out vec4 hd, out vec4 nd) {
+  nd = texelFetch(uMQ1, ip / 2, 0);
+  hd = vec4(0.0);
+  float tEst = nd.x > 0.0 ? nd.x : uMaxDist;
+  vec3 X = uCamPos + rd * tEst;
+  float wm = X.y >= uBand2.x ? ${f2(LAYERS[2].wind)} : (X.y <= uBand0.z ? ${f2(LAYERS[0].wind)} : ${f2(LAYERS[1].wind)});
+  X -= vec3(uWindD.x, 0.0, uWindD.y) * wm;                 // облака за кадр уехали по ветру
+  vec3 v = (X - uPrevCamPos) * uPrevCamRot;
+  puv = vec2(0.5);
+  if (v.z > -1e-3) return false;
+  puv = vec2(v.x / (-v.z) / uPrevTan.x, v.y / (-v.z) / uPrevTan.y) * 0.5 + 0.5;
+  if (puv.x <= 0.0 || puv.x >= 1.0 || puv.y <= 0.0 || puv.y >= 1.0) return false;
+  hd = texelFetch(uH1, clamp(ivec2(puv * uFullSize), ivec2(0), ivec2(uFullSize) - 1), 0);
+  float m = 0.05 * t1 + 0.5;
+  return hd.z >= t1 - m && hd.y <= t1 + m;
+}
+#endif
+
+#ifdef RESOLVE
+// Бикубическая (Catmull-Rom) выборка истории по 5 обращениям: резче билинейной, поэтому картинка не «мылится» при движении камеры
+vec4 sampleCR(sampler2D tex, vec2 uv, vec2 size) {
+#ifdef HIST_BILINEAR
+  return texture(tex, uv);
+#endif
+  vec2 pos = uv * size;
+  vec2 c = floor(pos - 0.5) + 0.5;
+  vec2 f = pos - c;
+  vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+  vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+  vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+  vec2 w3 = f * f * (-0.5 + 0.5 * f);
+  vec2 w12 = w1 + w2;
+  vec2 p0 = (c - 1.0) / size, p3 = (c + 2.0) / size, p12 = (c + w2 / w12) / size;
+  vec4 r = texture(tex, vec2(p12.x, p0.y)) * (w12.x * w0.y)
+         + texture(tex, vec2(p0.x, p12.y)) * (w0.x * w12.y)
+         + texture(tex, p12) * (w12.x * w12.y)
+         + texture(tex, vec2(p3.x, p12.y)) * (w3.x * w12.y)
+         + texture(tex, vec2(p12.x, p3.y)) * (w12.x * w3.y);
+  float ws = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;
+  return r / ws;
+}
+
+// Сборка полного кадра: в 1/4 пикселей (по очереди) — свежий рэймарчинг, остальные берутся из истории.
+// Пиксели с негодной историей здесь получают свежий образец блока, а потом их полностью пересчитывает проход перерисовки (FIXUP).
+void main() {
+  ivec2 ip = ivec2(gl_FragCoord.xy);
+  vec2 uv = (vec2(ip) + 0.5) / uFullSize;
+  vec3 rd = normalize(uCamRot * vec3((uv.x * 2.0 - 1.0) * uTan.x, (uv.y * 2.0 - 1.0) * uTan.y, -1.0));
+  float t1 = platT(texture(uDepth, uv).r, rd);
+  vec2 puv; vec4 hd, nd;
+  bool ok = historyOk(ip, rd, t1, puv, hd, nd);
+  vec4 nc = texelFetch(uMQ0, ip / 2, 0);
+  vec4 oc, od;
+  if (!ok) { oc = nc; od = nd; }
+  else {
+    // свежие образцы вокруг: по ним «зажимаем» историю, чтобы не оставалось шлейфов
+    ivec2 qp = ip / 2, qmax = textureSize(uMQ0, 0) - 1;
+    vec4 mn = nc, mx = nc;
+    for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+      vec4 s = texelFetch(uMQ0, clamp(qp + ivec2(i, j), ivec2(0), qmax), 0);
+      mn = min(mn, s); mx = max(mx, s);
+    }
+    vec4 hc = clamp(sampleCR(uH0, puv, uFullSize), mn, mx);
+    bool fresh = (ip.x & 1) == int(uSlot.x + 0.5) && (ip.y & 1) == int(uSlot.y + 0.5);
+    if (fresh) { oc = mix(hc, nc, uBlend); od = nd; }  // свежий пиксель: подмешиваем новый образец
+    else { oc = mix(hc, nc, uBlend2); od = vec4(hd.x, hd.y, hd.z > 50000.0 ? 60000.0 : t1, 0.0); } // остальным пикселям блока тоже чуть подмешиваем свежий образец: иначе при движении остаётся «гребёнка»
+  }
+  gl_FragColor = oc;
+  gData = od;
+}
+#elif defined(FIXUP)
+// Перерисовка: полный рэймарчинг только в пикселях, где история не годится; остальные сразу отбрасываются
+void main() {
+  ivec2 ip = ivec2(gl_FragCoord.xy);
+  vec2 uv = (vec2(ip) + 0.5) / uFullSize;
+  vec3 rd = normalize(uCamRot * vec3((uv.x * 2.0 - 1.0) * uTan.x, (uv.y * 2.0 - 1.0) * uTan.y, -1.0));
+  float dep = texture(uDepth, uv).r;
+  vec2 puv; vec4 hd, nd;
+  if (historyOk(ip, rd, platT(dep, rd), puv, hd, nd)) discard;
+  vec4 data;
+  vec4 r = marchRay(rd, dep, vec2(ip), data);
+  gl_FragColor = r;
+  gData = data;
+}
+#else
+void main() {
+  vec2 fcInt = floor(gl_FragCoord.xy) * uStride + uSlot;
+  vec2 uv = (fcInt + 0.5) / uFullSize;
+  vec3 rd = normalize(uCamRot * vec3((uv.x * 2.0 - 1.0) * uTan.x, (uv.y * 2.0 - 1.0) * uTan.y, -1.0));
+  float dep = texture(uDepth, uv).r;
+#ifdef TEMPORAL
+  // Четверть кадра для временной сборки: пишем всегда (без discard), чтобы данные в текстурах были определены
+  vec4 data;
+  vec4 r = marchRay(rd, dep, fcInt, data);
+  gl_FragColor = r;
+  gData = data;
+#else
+  // Проверка тракта отрисовки: ?clouds=debug — сплошной розовый экран, ?clouds=depth — карта глубины (серое — платформы, зелёное — пусто)
+  if (uDebug > 0.5 && uDebug < 1.5) { gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }
+  if (uDebug > 1.5) {
+    float zn = dep * 2.0 - 1.0;
+    float vz = 2.0 * uNearFar.x * uNearFar.y / (uNearFar.y + uNearFar.x - zn * (uNearFar.y - uNearFar.x));
+    gl_FragColor = dep < 0.99999 ? vec4(vec3(clamp(vz / 60.0, 0.0, 1.0)), 1.0) : vec4(0.0, 0.35, 0.0, 1.0);
+    return;
+  }
+  vec4 data;
+  vec4 r = marchRay(rd, dep, fcInt, data);
+  if (r.a <= 0.0) discard;
+  gl_FragColor = vec4(r.rgb / r.a, r.a);
+  #include <colorspace_fragment>
+  gl_FragColor.rgb *= gl_FragColor.a;
+#endif
+}
+#endif`;
+}
+
+// Вывод готового кадра на холст: читает историю 1 в 1, кодирует цвет так же, как прямой путь (кодируем без альфы, потом умножаем)
+const BLIT_VERT = `void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }`;
+const BLIT_FRAG = `
+precision highp sampler2D;
+uniform sampler2D uTex;
+void main() {
+  vec4 c = texelFetch(uTex, ivec2(gl_FragCoord.xy), 0);
+  if (c.a < 0.004) discard;
+  gl_FragColor = vec4(c.rgb / c.a, c.a);
   #include <colorspace_fragment>
   gl_FragColor.rgb *= gl_FragColor.a;
 }`;
-}
 
 const NOOP = () => {};
-const STUB = { objects: [], setLook: NOOP, setBands: NOOP, setWeather: NOOP, setResolution: NOOP, setOccHeight: NOOP, setOccluders: NOOP, update: NOOP, render: NOOP };
+const STUB = { objects: [], setLook: NOOP, setBands: NOOP, setWeather: NOOP, setResolution: NOOP, setOccHeight: NOOP, setOccluders: NOOP, setTemporal: NOOP, debugInfo: () => null, update: NOOP, render: NOOP };
 const LEVELS = [144, 180, 216, 270, 360, 480, 720, 1080]; // ступени разрешения холста облаков (строк)
 const levelOf = (lines) => { let k = 0; LEVELS.forEach((v, i) => { if (v <= lines) k = i; }); return k; };
 
@@ -414,6 +562,8 @@ export function createClouds(scene, opts = {}) {
   // По умолчанию разрешение облаков привязано к разрешению игры (см. linkedH) и не меняется само.
   // Старая автоподстройка по FPS включается адресом ?clouds=auto
   const auto = opts.auto !== false && qmode === 'auto';
+  // Временная сборка (по умолчанию включена): каждый кадр считается 1/4 пикселей, остальное — репроекция прошлого кадра.
+  // Выключить: ?clouds=notemporal. Не работает с отладочными режимами и со старой автоподстройкой разрешения.
   let capLvl = levelOf(opts.height || (high ? 480 : 360));  // потолок разрешения (только для автоподстройки)
   let lvl = auto ? Math.min(capLvl, 3) : capLvl;            // автоподстройка стартует с 270 строк
   // Привязка к игре: облака рисуются в 1.5 раза чётче кадра игры, но не меньше 360 и не больше 540 строк
@@ -432,6 +582,10 @@ export function createClouds(scene, opts = {}) {
     return STUB;
   }
   const cv = renderer.domElement;
+  const ext = renderer.extensions;
+  // Временной режим нужен WebGL2 и рендер в 16-битные float-текстуры
+  const canTemporal = renderer.capabilities.isWebGL2 && (ext.has('EXT_color_buffer_float') || ext.has('EXT_color_buffer_half_float'));
+  let temporalOn = canTemporal && (opts.temporal ?? (qmode !== 'notemporal')) && debug === 0 && !auto;
   cv.id = 'cloudCanvas';
   Object.assign(cv.style, { position: 'absolute', left: '0', top: '0', zIndex: '1', pointerEvents: 'none', imageRendering: 'auto' });
   (opts.parent || document.getElementById('game') || document.body).appendChild(cv);
@@ -439,24 +593,43 @@ export function createClouds(scene, opts = {}) {
   renderer.setClearColor(0x000000, 0);
 
   const CA = makeCellTex(), CB = makeCellTex(), CC = makeCellTex();
+  // Общие uniforms: один набор объектов на все материалы, значения меняются в одном месте
+  const U = {
+    uNoise: { value: makeNoise3D(32) }, uDepth: { value: null }, uCellA: { value: CA.t }, uCellB: { value: CB.t }, uCellC: { value: CC.t },
+    uTime: { value: 0 }, uDebug: { value: debug }, uUseDepth: { value: qmode === 'nodepth' ? 0 : 1 }, uRain: { value: 0 }, uMaxDist: { value: maxDist }, uTubeOn: { value: 0 },
+    uWind: { value: new THREE.Vector2() }, uFogRange: { value: new THREE.Vector2(24, 150) },
+    uNearFar: { value: new THREE.Vector2(0.1, 250) }, uHull: { value: new THREE.Vector2(-30, 80) },
+    uTan: { value: new THREE.Vector2(1, 1) }, uCamRot: { value: new THREE.Matrix3() },
+    uCamPos: { value: new THREE.Vector3() }, uCamFwd: { value: new THREE.Vector3(0, 0, -1) }, uFocus: { value: new THREE.Vector3() },
+    uLit: { value: new THREE.Color(1, 1, 1) }, uShade: { value: new THREE.Color(0.25, 0.3, 0.45) },
+    uGlow: { value: new THREE.Color(1, 0.95, 0.85) }, uSunDir: { value: new THREE.Vector3(5, 10, 6).normalize() },
+    uFogColor: { value: new THREE.Color(0xb0d8ff) },
+    uBand0: { value: new THREE.Vector3() }, uBand1: { value: new THREE.Vector3() }, uBand2: { value: new THREE.Vector3() },
+    // полный размер кадра облаков, шаг пикселей (1 — каждый, 2 — четверть кадра), номер пикселя блока 2x2 и сдвиг шума кадра
+    uFullSize: { value: new THREE.Vector2(2, 2) }, uStride: { value: 1 }, uSlot: { value: new THREE.Vector2() }, uJit: { value: 0 },
+    // временная сборка: свежая четверть кадра, история прошлого кадра и параметры прошлой камеры
+    uMQ0: { value: null }, uMQ1: { value: null }, uH0: { value: null }, uH1: { value: null },
+    uPrevCamPos: { value: new THREE.Vector3() }, uPrevCamRot: { value: new THREE.Matrix3() }, uPrevTan: { value: new THREE.Vector2(1, 1) },
+    uWindD: { value: new THREE.Vector2() }, uBlend: { value: 0.3 }, uBlend2: { value: 0.0 },
+  };
+  const FRAG = fragSrc(high);
+  // Прямой путь (без временной сборки): рисует прямо на холст
   const mat = new THREE.ShaderMaterial({
-    vertexShader: VERT,
-    fragmentShader: fragSrc(high),
-    uniforms: {
-      uNoise: { value: makeNoise3D(32) }, uDepth: { value: null }, uCellA: { value: CA.t }, uCellB: { value: CB.t }, uCellC: { value: CC.t },
-      uTime: { value: 0 }, uDebug: { value: debug }, uUseDepth: { value: qmode === 'nodepth' ? 0 : 1 }, uRain: { value: 0 }, uMaxDist: { value: maxDist }, uTubeOn: { value: 0 },
-      uWind: { value: new THREE.Vector2() }, uFogRange: { value: new THREE.Vector2(24, 150) },
-      uNearFar: { value: new THREE.Vector2(0.1, 250) }, uHull: { value: new THREE.Vector2(-30, 80) },
-      uTan: { value: new THREE.Vector2(1, 1) }, uCamRot: { value: new THREE.Matrix3() },
-      uCamPos: { value: new THREE.Vector3() }, uCamFwd: { value: new THREE.Vector3(0, 0, -1) }, uFocus: { value: new THREE.Vector3() },
-      uLit: { value: new THREE.Color(1, 1, 1) }, uShade: { value: new THREE.Color(0.25, 0.3, 0.45) },
-      uGlow: { value: new THREE.Color(1, 0.95, 0.85) }, uSunDir: { value: new THREE.Vector3(5, 10, 6).normalize() },
-      uFogColor: { value: new THREE.Color(0xb0d8ff) },
-      uBand0: { value: new THREE.Vector3() }, uBand1: { value: new THREE.Vector3() }, uBand2: { value: new THREE.Vector3() },
-    },
+    vertexShader: VERT, fragmentShader: FRAG, uniforms: U,
     transparent: true, premultipliedAlpha: true, depthWrite: false, depthTest: false, fog: false,
   });
-  const u = mat.uniforms;
+  // Временной путь: четверть кадра и сборка; пишут в текстуры без смешивания, в два выхода (цвет и данные луча)
+  const rtMat = (defines) => new THREE.ShaderMaterial({
+    vertexShader: VERT, fragmentShader: FRAG, uniforms: U, defines: opts.sharpHistory ? defines : { ...defines, HIST_BILINEAR: 1 },
+    blending: THREE.NoBlending, depthWrite: false, depthTest: false, fog: false,
+  });
+  const matMarch = rtMat({ TEMPORAL: 1 }), matResolve = rtMat({ TEMPORAL: 1, RESOLVE: 1 }), matFix = rtMat({ TEMPORAL: 1, FIXUP: 1 });
+  const matBlit = new THREE.ShaderMaterial({
+    vertexShader: BLIT_VERT, fragmentShader: BLIT_FRAG, uniforms: { uTex: { value: null } },
+    blending: THREE.NoBlending, depthWrite: false, depthTest: false, fog: false,
+  });
+  const allMats = [mat, matMarch, matResolve, matFix];
+  const u = U;
 
   const cloudScene = new THREE.Scene();
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
@@ -465,13 +638,15 @@ export function createClouds(scene, opts = {}) {
 
   // ── Размеры: холст облаков (меняется автоподстройкой) и карта глубины (размер как у кадра игры) ──
   let rt = null;
-  const resizeCanvas = () => renderer.setSize(Math.max(2, Math.round((cloudH * innerWidth) / innerHeight)), cloudH, false);
+  let T = null; // временная сборка: текстуры и история (создаются при первом кадре)
+  const resizeCanvas = () => { renderer.setSize(Math.max(2, Math.round((cloudH * innerWidth) / innerHeight)), cloudH, false); if (T) T.valid = false; };
   function resizeDepth() {
     const ow = Math.max(2, Math.round((occH * innerWidth) / innerHeight)); // ровно столько же, сколько у основного кадра игры
     if (rt) rt.dispose();
     const dt = new THREE.DepthTexture(ow, occH, THREE.UnsignedIntType);
     rt = new THREE.WebGLRenderTarget(ow, occH, { depthTexture: dt, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
     u.uDepth.value = dt;
+    if (T) T.valid = false;
   }
   addEventListener('resize', () => { resizeCanvas(); resizeDepth(); });
   resizeCanvas(); resizeDepth();
@@ -517,6 +692,81 @@ export function createClouds(scene, opts = {}) {
   }
   function syncDynamic() {
     for (const d of occDyn) { d.src.updateWorldMatrix(true, false); d.mesh.matrix.copy(d.src.matrixWorld); d.mesh.matrixWorldNeedsUpdate = true; }
+  }
+
+  // ── Временная сборка облаков ─────────────────────────────────
+  // Кадр делится на блоки 2x2. Каждый кадр рэймарчинг считается в одном пикселе блока (по кругу: 4 кадра на полный цикл),
+  // а полный кадр собирается из прошлого: точка облака переносится в прошлую камеру по расстоянию до облака (с поправкой на ветер).
+  // Историю «зажимаем» по свежим соседним образцам (иначе остаются шлейфы), а у краёв платформ, где история не годится,
+  // пиксель считается целиком. Так 3/4 работы на пиксель не тратится, а шум рэймарчинга усредняется по кадрам.
+  const SLOTS = [[0, 0], [1, 1], [1, 0], [0, 1]];
+  const BLEND = opts.blend ? opts.blend[0] : 0.3;      // вес свежего образца в «своём» пикселе блока
+  const BLEND2 = opts.blend ? opts.blend[1] : 0.0;     // вес свежего образца в остальных пикселях блока
+  const tx = (r, k) => (r.textures ? r.textures[k] : r.texture[k]);
+  const _cp = new THREE.Vector3(), _fw = new THREE.Vector3();
+  const ROT_MAX = 0.012;                              // рад за кадр (≈0.7 рад/с при 60 FPS)
+  function makeMRT(w, h, filter, depth) {
+    const o = { type: THREE.HalfFloatType, format: THREE.RGBAFormat, minFilter: filter, magFilter: filter, depthBuffer: !!depth, stencilBuffer: false, generateMipmaps: false };
+    const r = THREE.WebGLMultipleRenderTargets ? new THREE.WebGLMultipleRenderTargets(w, h, 2, o) : new THREE.WebGLRenderTarget(w, h, { ...o, count: 2 });
+    for (let k = 0; k < 2; k++) { const t = tx(r, k); t.minFilter = t.magFilter = filter; t.generateMipmaps = false; t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; }
+    return r;
+  }
+  function disposeTemporal() { if (!T) return; T.mq.dispose(); T.H[0].dispose(); T.H[1].dispose(); T = null; }
+  function buildTemporal(w, h) {
+    disposeTemporal();
+    T = {
+      w, h, f: 0, i: 0, valid: false,
+      mq: makeMRT(Math.ceil(w / 2), Math.ceil(h / 2), THREE.NearestFilter),
+      H: [makeMRT(w, h, THREE.LinearFilter), makeMRT(w, h, THREE.LinearFilter)],
+      pos: new THREE.Vector3(), rot: new THREE.Matrix3(), tan: new THREE.Vector2(), wind: new THREE.Vector2(), fwd: new THREE.Vector3(0, 0, -1),
+    };
+  }
+  let fullFrames = 0, partFrames = 0;
+  let jitterOverride = 0; // только для тестов: сдвиг шума в прямом режиме (0 — как в игре)
+  function renderTemporal() {
+    const cw = cv.width, ch = cv.height;
+    if (!T || T.w !== cw || T.h !== ch) buildTemporal(cw, ch);
+    const th = Math.tan((cam.fov * Math.PI) / 360), tanx = th * cam.aspect;
+    _cp.setFromMatrixPosition(cam.matrixWorld);
+    // полный кадр: первый кадр, смена размера/уровня, телепорт камеры или смена угла обзора
+    // При быстром повороте камеры (больше ROT_MAX за кадр) временная сборка даёт структурные артефакты («гребёнку»),
+    // поэтому такие кадры считаются полностью, как в прямом режиме: картинка не хуже прежней, цена выше только на время поворота.
+    cam.getWorldDirection(_fw);
+    const turned = _fw.dot(T.fwd) < Math.cos(ROT_MAX);
+    const full = !T.valid || turned || _cp.distanceTo(T.pos) > 60 || Math.abs(tanx - T.tan.x) > 1e-4 || Math.abs(th - T.tan.y) > 1e-4;
+    T.f++;
+    const slot = full ? SLOTS[0] : SLOTS[T.f & 3];
+    u.uFullSize.value.set(cw, ch);
+    u.uSlot.value.set(slot[0], slot[1]);
+    u.uJit.value = T.f % 64;
+    const cur = T.H[T.i], prv = T.H[T.i ^ 1];
+    mesh.material = matMarch;
+    if (full) {
+      fullFrames++;
+      u.uStride.value = 1; u.uSlot.value.set(0, 0);
+      renderer.setRenderTarget(cur); renderer.render(cloudScene, cam);
+    } else {
+      partFrames++;
+      u.uStride.value = 2;
+      renderer.setRenderTarget(T.mq); renderer.render(cloudScene, cam);          // свежая четверть кадра
+      u.uMQ0.value = tx(T.mq, 0); u.uMQ1.value = tx(T.mq, 1);
+      u.uH0.value = tx(prv, 0); u.uH1.value = tx(prv, 1);
+      u.uPrevCamPos.value.copy(T.pos); u.uPrevCamRot.value.copy(T.rot); u.uPrevTan.value.copy(T.tan);
+      u.uWindD.value.copy(u.uWind.value).sub(T.wind); u.uBlend.value = BLEND; u.uBlend2.value = BLEND2;
+      mesh.material = matResolve;
+      renderer.setRenderTarget(cur); renderer.render(cloudScene, cam);          // сборка полного кадра
+      // Перерисовка пикселей, у которых история не годится (края платформ и т. п.): полный рэймарчинг только в них
+      u.uStride.value = 1; u.uSlot.value.set(0, 0);
+      renderer.autoClear = false;
+      mesh.material = matFix;
+      try { renderer.render(cloudScene, cam); } finally { renderer.autoClear = true; }
+    }
+    matBlit.uniforms.uTex.value = tx(cur, 0);
+    mesh.material = matBlit;
+    renderer.setRenderTarget(null); renderer.render(cloudScene, cam);          // на холст
+    mesh.material = mat;
+    T.fwd.copy(_fw); T.pos.copy(_cp); T.rot.copy(u.uCamRot.value); T.tan.set(tanx, th); T.wind.copy(u.uWind.value);
+    T.i ^= 1; T.valid = true;
   }
 
   const field = { low: -10, high: 10 };  // высоты уровня, под которые подстраиваемся (setBands)
@@ -613,7 +863,7 @@ export function createClouds(scene, opts = {}) {
     const tube = !editing && camera.fov < 68;
     u.uTubeOn.value = tube ? 1 : 0;
     u.uFocus.value.copy(u.uCamPos.value).addScaledVector(u.uCamFwd.value, FOCUS_DIST);
-    mat.uniformsNeedUpdate = true;
+    for (const m of allMats) m.uniformsNeedUpdate = true;
   };
 
   // ── Отрисовка: сама, из update() ─────────────────────────────
@@ -639,7 +889,18 @@ export function createClouds(scene, opts = {}) {
       } finally {
         renderer.setRenderTarget(null);
       }
-      renderer.render(cloudScene, cam);
+      if (temporalOn) {
+        try { renderTemporal(); }
+        catch (e) { // что-то не так с float-текстурами или MRT: тихо возвращаемся к прямому рисованию
+          console.error('[clouds] временная сборка отключена:', e);
+          renderer.setRenderTarget(null); temporalOn = false; disposeTemporal();
+        }
+      }
+      if (!temporalOn) {
+        u.uStride.value = 1; u.uSlot.value.set(0, 0); u.uJit.value = jitterOverride; u.uFullSize.value.set(cv.width, cv.height);
+        mesh.material = mat;
+        renderer.render(cloudScene, cam);
+      }
       frames++;
       if (info && frames % 20 === 0) { // раз в треть секунды: проверяем, нарисовалось ли что-нибудь на холсте облаков
         const gl = renderer.getContext(), px = new Uint8Array(4), w = cv.width, h = cv.height;
@@ -658,7 +919,7 @@ export function createClouds(scene, opts = {}) {
     if (info && (frames % 20 === 0 || errText)) {
       info.style.color = errText ? '#ff8080' : '#7dff9a';
       info.textContent = 'Облака: ' + (errText ? 'ОШИБКА\n' + errText : 'работают')
-        + '\nкадров: ' + frames + ' | холст ' + cv.width + '×' + cv.height + ' (' + (auto ? 'авто, потолок ' + LEVELS[capLvl] : 'привязано к игре ' + occH + 'p') + ') | глубина ' + rt.width + '×' + rt.height
+        + '\nрежим: ' + (temporalOn ? 'временная сборка (1/4 пикселей за кадр; полных кадров ' + fullFrames + ')' : 'прямой') + '\nкадров: ' + frames + ' | холст ' + cv.width + '×' + cv.height + ' (' + (auto ? 'авто, потолок ' + LEVELS[capLvl] : 'привязано к игре ' + occH + 'p') + ') | глубина ' + rt.width + '×' + rt.height
         + '\nкадр ' + (ema * 1000).toFixed(1) + ' мс (' + Math.round(1 / ema) + ' FPS)'
         + '\nзакрывающих мешей (draw call): ' + occN + ' | шейдеров: ' + (renderer.info.programs ? renderer.info.programs.length : '?') + ' | GL: ' + (glErr || 'ok')
         + '\nточек с облаками на холсте: ' + hits + ' (0 — облаков в кадре нет)'
@@ -668,6 +929,11 @@ export function createClouds(scene, opts = {}) {
 
   return {
     objects: [], // облака рисуются отдельным холстом, в сцене игры их нет: прятать при SSAO/SSR не нужно
+
+    // Включить/выключить временную сборку на лету (например, для настройки в меню)
+    setTemporal(on) { temporalOn = !!on && canTemporal; if (!temporalOn) disposeTemporal(); else if (T) T.valid = false; },
+    setJitter(v) { jitterOverride = v; }, // только для тестов
+    debugInfo: () => ({ temporal: temporalOn, canTemporal, fullFrames, partFrames, canvas: [cv.width, cv.height] }),
 
     // Геометрия, которая закрывает облака: statics склеиваются в один меш, dynamics (лифты) повторяют положение оригиналов
     setOccluders,
@@ -680,7 +946,7 @@ export function createClouds(scene, opts = {}) {
     },
 
     // Высоты уровня. Остальные поля (cx, cz, r) не нужны: облака заполняют весь мир, сетка бесконечная
-    setBands({ low, high: hi }) { field.low = low; field.high = hi; cellT = -1; },
+    setBands({ low, high: hi }) { if (T && (low !== field.low || hi !== field.high)) T.valid = false; field.low = low; field.high = hi; cellT = -1; },
 
     // Дождь 0..1: облака сходятся в сплошную облачность, становятся крупнее, площе, ниже и быстрее
     setWeather(rain) { rainT = clamp(rain, 0, 1); },
